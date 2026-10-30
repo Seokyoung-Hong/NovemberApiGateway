@@ -8,7 +8,7 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 |---|---|---|---|
 | 대표 대시보드 | 발표자(대표 역) | 게이트웨이 `/admin/*`·`/demo/*` | `demo-scenario.md` 장면 1~7 |
 | 페이지 A: 청중 채팅 (필수) | 청중(유출 키 사용자 역) | Mock `/live/*` | `demo-page-spec.md` 2절 |
-| 페이지 B: 직원 채팅 (선택) | 직원 A·B 역 | 게이트웨이 `/v1/chat/completions` | `demo-page-spec.md` 3절 |
+| 페이지 B: 사용자 채팅 (선택) | 사용자 A·B 역 | 게이트웨이 `/v1/chat/completions` | `demo-page-spec.md` 3절 |
 
 **이미 있는 것(디자인 없음, 참고·대체 대상)**
 - `GET /test` (게이트웨이, `app/static/test.html`): 모든 API를 버튼으로 호출하는 기능 테스트 페이지. 대시보드 1초·live stats 2초 폴링 예시 코드가 들어 있다.
@@ -16,14 +16,15 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 
 ## 2. 접속 정보
 - **테스트 서버**: `https://hack.sio2.kr` (게이트웨이, 공개 모드). 청중 페이지 `https://hack.sio2.kr/live`(NPM이 `/live*`만 Mock으로 보냄).
-  - 공개 모드라 `/admin/*`·`/demo/*`·`/idp/token`은 헤더 `X-Admin-Key` 필수. 키 값은 담당자에게 별도로 받는다(서버 PC의 `C:\Users\tjrdu\novemberdeploy\admin_key.txt`). **키를 코드·저장소·청중 페이지에 넣지 말 것.**
-  - 키 없이 쓰는 것: `/v1/chat/completions`(직원 토큰), `/live`, `/live/config`, `/live/chat`, `/live/stats`, `/test`(페이지 자체).
+  - 공개 모드라 `/admin/*`·`/demo/*`·`/idp/token`은 헤더 `X-Admin-Key` 필수. 관리자 키는 `admin`(데모 서버 고정값, 공개 서버에서는 추측 가능하므로 접근 제한 필요). **키를 청중 페이지에 넣지 말 것.**
+  - **경고: `admin`은 누구나 추측할 수 있는 약한 키다. 공개 서버에서는 NPM 접근 제한(IP·인증) 없이 열어 두지 말 것.**
+  - 키 없이 쓰는 것: `/v1/chat/completions`(사용자 토큰), `/live`, `/live/config`, `/live/chat`, `/live/stats`, `/test`(페이지 자체).
   - 실제 AI 키 없이 실행된다 → 답은 항상 `"mock response"`, OpenRouter/OpenAI 모드 불가.
   - `/docs`(Swagger)는 꺼져 있다. 스키마는 `contract.md`를 본다.
-- **로컬 실행**: README "실행" 절(`scripts/dev.ps1` → 게이트웨이 `http://127.0.0.1:8000`, Mock `http://127.0.0.1:9000`). 로컬 관리자 키 기본값 `demo-admin`, `/demo/*`는 키 불필요. 로컬에서는 `/live`가 9000 포트(다른 origin)다.
+- **로컬 실행**: README "실행" 절(`scripts/dev.ps1` → 게이트웨이 `http://127.0.0.1:8000`, Mock `http://127.0.0.1:9000`). 로컬 관리자 키 기본값 `admin`, `/demo/*`는 키 불필요. 로컬에서는 `/live`가 9000 포트(다른 origin)다.
 - **CORS**: 게이트웨이·Mock 모두 전체 허용(`allow_origins/methods/headers=*`). 401에도 CORS 헤더가 붙는다. 쿠키·인증정보는 쓰지 않는다.
 - **폴링 권장 주기**: 대시보드 `GET /admin/dashboard` 1초, `GET /live/stats` 2초, `GET /admin/events?since_id=` 1~2초, `GET /admin/timeseries` 2초(버킷이 2초). 서버 워커는 2초마다 판정하므로 더 빨리 불러도 값은 2초 단위로 바뀐다.
-- **브라우저에서 직원 호출 시 주의(테스트 서버)**: `/v1`은 출발 IP가 허용 대역(시드: `127.0.0.1/32`, `::1/128`, `10.0.0.0/16`, `10.8.0.0/24`)이어야 한다. 인터넷에서 접속하면 기본으로 **403 `ip_not_allowed`**. 페이지 B를 테스트 서버에서 쓰려면 리셋 후 관리자가 `POST /admin/cidrs {"cidr":"<발표장 공인 IP>/32","label":"VPN"}`을 추가해야 한다(리셋마다 다시).
+- **허용 IP(테스트 서버 포함)**: 기본은 **모두 허용**(리셋 직후 `GET /admin/cidrs` = `[]`, 대시보드 `ip_policy:"open"`). 관리자가 `POST /admin/cidrs {"cidr":"10.0.0.0/16","label":"INTERNAL"}`처럼 대역을 하나라도 등록하면 그 대역만 허용되고 나머지는 **403 `ip_not_allowed`**. `*`를 등록하면 전체 허용.
 
 ## 3. 화면별 API 매핑
 공통: 관리자 호출은 헤더 `X-Admin-Key`, 본문은 JSON. 시각은 ISO8601 UTC 문자열(표시할 때 로컬 시간으로 변환).
@@ -33,8 +34,8 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 | 장면 1 크레덴셜 카드 | `GET /admin/credentials` (또는 대시보드 `credentials[]`) | `masked, auth_mode, role, status, provider, replaced_by_id` | 원문은 절대 오지 않음. 마스킹만 표시 |
 | 장면 1 크레덴셜 추가 | `POST /admin/credentials {provider:"mock",auth_mode,role,secret?|audience?}` | 생성된 항목 | 400(PRIMARY 중복, 필수값 누락, provider가 mock 아님) |
 | 장면 1 한도 | `GET`/`PUT /admin/settings {unauthorized_call_limit}` | `unauthorized_call_limit`(판정), `loss_limit_krw`(참고) | 0 이하 400. 반영은 다음 틱(≤2초) |
-| 장면 1 허용 IP | `GET`/`POST /admin/cidrs {cidr,label}`, `DELETE /admin/cidrs/{id}` | `id, cidr, label(INTERNAL/VPN)` | 잘못된 cidr 400 |
-| 장면 1 직원 토큰 | `GET /admin/services`, `POST /admin/tokens {service_name}`, `DELETE /admin/tokens/{id}`, `POST /admin/services/{id}/suspend|resume` | `services[].tokens[].token_masked/status`, 발급 응답 `token`(원문 1회) | 원문은 발급 응답에서만 보여 주고 저장하지 않음 |
+| 장면 1 허용 IP | `GET`/`POST /admin/cidrs {cidr,label}`, `DELETE /admin/cidrs/{id}` | `id, cidr, label(INTERNAL/VPN)` | 잘못된 cidr 400, 빈 목록 = 모두 허용, `*` = 전체 허용 |
+| 장면 1 사용자 토큰 | `GET /admin/services`, `POST /admin/tokens {service_name}`, `DELETE /admin/tokens/{id}`, `POST /admin/services/{id}/suspend|resume` | `services[].tokens[].token_masked/status`, 발급 응답 `token`(원문 1회) | 원문은 발급 응답에서만 보여 주고 저장하지 않음 |
 | 장면 2 상태 배지·게이지 | `GET /admin/dashboard` (1초) | `status, diff_calls, limit_calls, warn_at_calls, block_at_calls, gateway_calls, provider_calls, active_credential, updated_at` | 4절 |
 | 장면 2 두 선 차트 | `GET /admin/timeseries?range=300` (2초) | `points[].t, gateway_calls, provider_calls`(판정용), `gateway_krw, provider_krw`(참고) | 누적값. 빈 구간도 점이 온다 |
 | 장면 2 거부 로그 | `GET /admin/access-denied?limit=20` | `at, source_ip, reason, token_masked` | 사유 문구는 5절 |
@@ -49,7 +50,7 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 | 장면 8 한계 | (없음, 정적 슬라이드) | — | 4절 공급자 지연 표 |
 | 페이지 A 시작 | `GET /live/config` → `GET /live/stats` | `key, model`, `key_status` | 처음부터 `revoked`면 차단 상태로 시작 |
 | 페이지 A 전송 | `POST /live/chat {key, message}` | 200 `reply` | 401 차단 / 429 잠시 후 / 502·네트워크 오류는 연결 실패(차단과 구분) |
-| 페이지 B 전송 | `POST /v1/chat/completions` 헤더 `Authorization: Bearer <직원 토큰>`, 본문 `{model:"mock",messages:[...],max_tokens?,stream?}` | `choices[0].message.content`, `usage` | 5절 에러표. `stream:true`면 SSE(`data: {...}` … `data: [DONE]`) |
+| 페이지 B 전송 | `POST /v1/chat/completions` 헤더 `Authorization: Bearer <사용자 토큰>`, 본문 `{model:"mock",messages:[...],max_tokens?,stream?}` | `choices[0].message.content`, `usage` | 5절 에러표. `stream:true`면 SSE(`data: {...}` … `data: [DONE]`) |
 
 ## 4. 상태 머신과 표시 규칙
 `GET /admin/dashboard.status` (계산: `app/detector/router.py dashboard`)
@@ -80,10 +81,10 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 |---|---|---|---|
 | 401 | `{"detail":"invalid_admin_key"}` | 관리자 키 없음·틀림(`/admin/*` 대부분, 공개 모드 `/demo/*`·`/idp/token`) | 관리자 키 재입력 |
 | 401 | `{"detail":"bad admin key"}` | 같은 원인, `/admin/dashboard|timeseries|incidents|events`만 문구가 다름 | 위와 동일하게 처리(상태 코드로 판단) |
-| 401 | `{"error":"invalid_token"}` | `/v1` 직원 토큰 없음·틀림·폐기, 또는 허니키 | 토큰 확인 |
-| 401 | `{"error":"wif_invalid_signature"}` `wif_expired` `wif_audience_mismatch` `wif_untrusted_identity` `wif_malformed` | `/v1` JWT(직원 측 WIF) 검증 실패 | JWT 재발급(`/demo/wif/token`)·신뢰 규칙(`/demo/wif/seed`) 확인 |
+| 401 | `{"error":"invalid_token"}` | `/v1` 사용자 토큰 없음·틀림·폐기, 또는 허니키 | 토큰 확인 |
+| 401 | `{"error":"wif_invalid_signature"}` `wif_expired` `wif_audience_mismatch` `wif_untrusted_identity` `wif_malformed` | `/v1` JWT(사용자 측 WIF) 검증 실패 | JWT 재발급(`/demo/wif/token`)·신뢰 규칙(`/demo/wif/seed`) 확인 |
 | 401 | `{"error":"revoked"}` | `/live/chat`: 유출 키가 폐기됨 | **"차단되었습니다"** |
-| 403 | `{"error":"ip_not_allowed"}` | `/v1` 출발 IP가 허용 대역 밖 | 허용 IP 추가 필요(2절) |
+| 403 | `{"error":"ip_not_allowed"}` | `/v1` 출발 IP가 등록된 허용 대역 밖 | 허용 IP 추가 또는 대역 삭제(2절) |
 | 403 | `{"error":"ip_blocked"}` | 허니키를 쓴 IP, 600초 차단 | 차단 중 |
 | 403 | `{"error":"service_suspended"}` | 정지된 서비스의 토큰 | 서비스 정지됨 |
 | 404 | `{"detail":"not found"}` 등 | 없는 사고 id·리소스, `DEMO_MODE=0`이면 `/idp/*`·`/demo/wif/*` | — |
@@ -96,9 +97,9 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 거부 로그(`/admin/access-denied`)·`ACCESS_DENIED` 이벤트의 `reason` 값: `ip_not_allowed, invalid_token, service_suspended, ip_blocked, wif_*`. 허니키 호출은 거부 로그가 아니라 `HONEYKEY` 이벤트로 남는다.
 
 ## 6. 데모 운영 절차
-1. **리셋**: `POST /demo/reset` → 응답 `tokens.직원A/직원B`(직원 토큰 원문), `honeykeys`. 리셋마다 **토큰이 새로 발급**되므로 페이지 B에 새 토큰을 넣는다. 설정·허용 IP·예산도 시드값으로 돌아간다.
+1. **리셋**: `POST /demo/reset` → 응답 `tokens.userA/userB`(사용자 토큰 원문), `honeykeys`. 리셋마다 **토큰이 새로 발급**되므로 페이지 B에 새 토큰을 넣는다. 설정·예산도 시드값으로, 허용 IP는 빈 목록(모두 허용)으로 돌아간다.
 2. (WIF 시연 시) `POST /demo/wif/seed` — 리셋이 신뢰 규칙을 지우므로 **리셋 후 매번 재실행**. 이후 `POST /demo/wif/token` → `{token}`을 페이지 B의 Bearer로 사용 가능.
-3. (테스트 서버에서 페이지 B 시연 시) `POST /admin/cidrs`로 발표장 IP 추가(2절).
+3. (선택) 허용 IP 제한 시연 시 `POST /admin/cidrs`로 대역 등록, 끝나면 `DELETE`로 지워 모두 허용으로 되돌린다(2절).
 4. **시연**: 청중이 `/live`로 채팅(또는 백업 `POST /demo/attack/start`) → 대시보드 SUSPECT→WARNING→BLOCKED→RECOVERED. 공격은 키가 폐기되면 스스로 멈춘다(`ATTACK_STOPPED` 이벤트). 수동 중지 `POST /demo/attack/stop`.
 5. **허니키(선택)**: `POST /demo/honeypot/hit`.
 6. **정리/반복**: 다시 `POST /demo/reset`(Mock `/live/stats`도 0·active로 복귀 → 페이지 A는 새로고침 없이 정상 복귀해야 함). 실제 공급자 모드를 썼다면 `POST /demo/cleanup-openrouter`(로컬, `.env` 필요).
@@ -120,7 +121,7 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
    "gateway_cost_krw":0,"provider_cost_krw":0.0,"diff_krw":0.0,"diff_usd":0.0,
    "gateway_calls":0,"provider_calls":0,"diff_calls":0,"certain_diff_calls":0,"calls_estimated":false}],
  "attack_running":true,"incident_id":null,"updated_at":"2026-10-30T17:57:06.889292+00:00",
- "honeykey_hits":[],"blocked_ips":[]}
+ "honeykey_hits":[],"blocked_ips":[],"ip_policy":"open"}
 ```
 허니키 후에는 `"honeykey_hits":[{"at":"...","honeykey_masked":"nvm...jYbj","planted_at":"공개 저장소 .env.example","source_ip":"203.0.113.77"}]`, `"blocked_ips":[{"source_ip":"203.0.113.77","until":"..."}]`.
 
@@ -139,11 +140,11 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
   {"at":"2026-10-30T17:57:14.006764+00:00","step":"VERIFIED","detail":"sk-...aba7 호출 성공","ok":true}]}
 ```
 
-**`GET /admin/usage/summary?range=day`** (직원B는 생략, 형태 동일)
+**`GET /admin/usage/summary?range=day`** (userB는 생략, 형태 동일)
 ```json
 {"range":"day","from":"2026-10-30T15:00:00+00:00","to":"2026-10-30T17:57:27.509933+00:00",
  "total":{"calls":5,"input_tokens":0,"output_tokens":250,"cost_krw":100.0,"estimated_cost_krw":0.21},
- "services":[{"service_id":1,"name":"직원A","calls":4,"input_tokens":0,"output_tokens":200,"cost_krw":80.0,
+ "services":[{"service_id":1,"name":"userA","calls":4,"input_tokens":0,"output_tokens":200,"cost_krw":80.0,
    "estimated_cost_krw":0.168,"models":[{"model":"mock","calls":4,"input_tokens":0,"output_tokens":200,
    "cost_krw":80.0,"estimated_cost_krw":0.168,"estimated":true}]}]}
 ```
@@ -153,7 +154,7 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 {"participants":1,"calls":1,"key_status":"revoked","updated_at":1793383047}
 ```
 
-**`POST /v1/chat/completions`** (직원 채팅 200 응답, 테스트 서버는 항상 이 형태)
+**`POST /v1/chat/completions`** (사용자 채팅 200 응답, 테스트 서버는 항상 이 형태)
 ```json
 {"id":"chatcmpl-05b76f10340afff6","object":"chat.completion","created":1793383008,"model":"mock",
  "choices":[{"index":0,"message":{"role":"assistant","content":"mock response"},"finish_reason":"stop"}],
@@ -175,7 +176,7 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 **미정(결정 필요)**
 - 대시보드 레이아웃·색·아이콘(이 문서는 의미만 정함).
 - 복구 후 게이지 값: 최상위 합계(폐기 키 값 포함)를 계속 보여 줄지, 활성 크레덴셜 행 값으로 바꿀지.
-- 페이지 B를 만들지, 같은 화면에 A·B를 나란히 둘지, 직원 토큰 주입 방법(입력창/URL 파라미터 등).
+- 페이지 B를 만들지, 같은 화면에 A·B를 나란히 둘지, 사용자 토큰 주입 방법(입력창/URL 파라미터 등).
 - 관리자 키를 대시보드에 어떻게 입력·보관할지(공개 모드).
 - 정식 페이지의 배포 위치(현재 `/live`는 Mock 서버의 정적 파일, `/test`는 게이트웨이).
 

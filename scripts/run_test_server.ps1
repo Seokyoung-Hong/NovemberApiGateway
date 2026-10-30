@@ -18,15 +18,15 @@ if ($LASTEXITCODE) { throw "git fetch 실패" }
 $zip = "$Deploy\src.zip"
 git -C $Repo archive --format=zip -o $zip origin/main
 if ($LASTEXITCODE) { throw "git archive 실패" }
-if (Test-Path $Src) { Remove-Item -Recurse -Force $Src }  # 코드만 교체. DB(data\)·키(admin_key.txt)는 src 밖이라 보존
+if (Test-Path $Src) { Remove-Item -Recurse -Force $Src }  # 코드만 교체. DB(data\)는 src 밖이라 보존
 Expand-Archive $zip $Src
 Remove-Item $zip
 
 $keyFile = "$Deploy\admin_key.txt"
-if (-not (Test-Path $keyFile)) { [guid]::NewGuid().ToString("N") | Set-Content -NoNewline -Encoding ascii $keyFile }
+"admin" | Set-Content -NoNewline -Encoding ascii $keyFile  # 데모 고정값(추측 가능, 접근 제한은 NPM에서)
 
 $env:PUBLIC_MODE = "1"; $env:DEMO_MODE = "1"
-$env:ADMIN_KEY = (Get-Content -Raw $keyFile).Trim()
+$env:ADMIN_KEY = "admin"
 $env:TRUSTED_PROXIES = "100.69.18.101"  # NPM
 $env:MOCK_BASE_URL = "http://${ts}:9800"
 $env:DB_PATH = "$Data\gateway.db"
@@ -47,4 +47,4 @@ foreach ($u in "http://${ts}:8800/test", "http://${ts}:9800/live/config") {
     if (-not $ok) { & (Join-Path $PSScriptRoot "stop_test_server.ps1"); throw "헬스 확인 실패: $u (로그 $Logs)" }
     Write-Host "OK 200 $u"
 }
-Write-Host "Gateway http://${ts}:8800  Mock http://${ts}:9800  관리자 키 파일: $keyFile  로그: $Logs"
+Write-Host "Gateway http://${ts}:8800  Mock http://${ts}:9800  관리자 키: admin  로그: $Logs"

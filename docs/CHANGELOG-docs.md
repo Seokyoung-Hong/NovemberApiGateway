@@ -39,8 +39,8 @@
 | feature-spec.md | F11 `GET/POST/DELETE /admin/tokens`, `timeseries?range=5m`(3초 버킷), `events?since=` | 실제 경로 `POST`/`DELETE`+`GET /admin/services`, `range=300`(2초), `since_id`로 정정 |
 | feature-spec.md | F12 "`DEMO_MODE=1`일 때만 라우트 등록" | 항상 등록됨, `DEMO_MODE`의 실제 범위로 정정 |
 | feature-spec.md | 상태 머신에서 RECOVERED 이후 복귀 없음, 한도 변경 "즉시" 반영 | RECOVERED 10초 후 NORMAL·히스테리시스, 다음 틱 반영으로 정정 |
-| feature-spec.md | "미구현: 직원 측 WIF, OpenAI 어댑터" | 구현 완료로 정정 |
-| demo-scenario.md | 직원 측 WIF "개발 진행 중" | 구현 완료로 정정, 실측 전이 시각·RECOVERED 10초·허니키 버튼·테스트 서버 Mock 전용 보충 |
+| feature-spec.md | "미구현: 사용자 측 WIF, OpenAI 어댑터" | 구현 완료로 정정 |
+| demo-scenario.md | 사용자 측 WIF "개발 진행 중" | 구현 완료로 정정, 실측 전이 시각·RECOVERED 10초·허니키 버튼·테스트 서버 Mock 전용 보충 |
 | demo-page-spec.md | 502 `upstream_error`, 페이지 B 에러 코드 일부, 현재 live.html이 stats를 폴링하지 않는 점 누락 | 보충 |
 | README.md | 문서 목록에 architecture·demo-page-spec 없음, 관리자 키가 `demo-admin` 고정처럼 적힘, hack.sio2.kr이 "설정 후" | 목록 갱신(새 문서 포함), 키 환경변수·테스트 서버 현황으로 정정 |
 | (신규) frontend-handoff.md | — | 프론트·디자인 인계 문서 작성 |
@@ -55,3 +55,6 @@
 6. `app/gateway/router.py:149` 본문이 JSON이 아니면 `request.json()` 예외로 500이 날 것으로 보인다(실측 안 함, 400 반환 권장).
 7. `app/detector/router.py:293-306` 대시보드 최상위 호출 수 합계가 REVOKED 크레덴셜을 포함해 복구 후 NORMAL인데도 `diff_calls`가 큰 값으로 남는다(실측 84). 의도라면 문서대로 두고, 아니면 ACTIVE만 합산할지 결정 필요.
 8. `app/providers.py:21` 단가 상수(gpt-4o-mini)와 `app/pricing.py` 단가표가 중복된다(주석에도 교체 예정 명시).
+
+- 2026-10-31 용어 통일: 관리자 키 `demo-admin`→`admin`(데모 고정값, 약한 키 경고 추가), "직원/employee"→"사용자/user"(시드 서비스 `직원A`·`직원B`→`userA`·`userB`).
+- 2026-10-31 IP 정책: 허용 CIDR 0개면 `/v1` 모두 허용(기존: 전부 거부), `/demo/reset`의 CIDR 4개 시드 제거, `POST /admin/cidrs`에 `*` 허용, 대시보드 `ip_policy`(`open`|`restricted`) 추가.

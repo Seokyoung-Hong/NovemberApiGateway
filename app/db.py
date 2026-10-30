@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS event (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL,
   kind TEXT NOT NULL,   -- SUSPECT|WARNING|BLOCKED|RECOVERED|ATTACK_STARTED|ATTACK_STOPPED|ACCESS_DENIED|HONEYKEY
   message TEXT NOT NULL, data TEXT);
-CREATE TABLE IF NOT EXISTS trusted_identity (   -- 직원 측 WIF 신뢰 규칙(issuer + sub 글롭 → service)
+CREATE TABLE IF NOT EXISTS trusted_identity (   -- 사용자 측 WIF 신뢰 규칙(issuer + sub 글롭 → service)
   id INTEGER PRIMARY KEY AUTOINCREMENT, issuer TEXT NOT NULL, subject_pattern TEXT NOT NULL,
   audience TEXT, service_id INTEGER NOT NULL, jwks_uri TEXT, created_at TEXT NOT NULL);
 """

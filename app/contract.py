@@ -17,7 +17,7 @@ MOCK_BASE_URL = os.getenv("MOCK_BASE_URL", "http://127.0.0.1:9000")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 PROVIDERS = {"mock": MOCK_BASE_URL, "openrouter": OPENROUTER_BASE_URL, "openai": OPENAI_BASE_URL}  # 공급자 이름 -> base_url
-ADMIN_KEY = os.getenv("ADMIN_KEY", "demo-admin")  # X-Admin-Key (/admin/*, 공개 모드면 /demo/*·/idp/token도)
+ADMIN_KEY = os.getenv("ADMIN_KEY", "admin")  # X-Admin-Key (/admin/*, 공개 모드면 /demo/*·/idp/token도)
 PUBLIC_MODE = os.getenv("PUBLIC_MODE", "0") == "1"  # 인터넷 공개용(K절)
 TRUSTED_PROXIES = {p.strip() for p in os.getenv("TRUSTED_PROXIES", "").split(",") if p.strip()}  # XFF를 믿을 직접 접속 IP
 DB_PATH = os.getenv("DB_PATH", "data/gateway.db")
@@ -42,7 +42,7 @@ OPENROUTER_USAGE_LAG_S = 8  # 관리 키 GET /keys/{hash} usage 반영 지연(�
 OPENROUTER_REVOKE_LAG_S = 20  # disabled:true 후 실제 401까지(실측 약 20초)
 OPENROUTER_MODEL = "openai/gpt-4o-mini"
 OPENROUTER_LIMIT_CALLS = 100  # reset-openrouter/openai 시드 한도(호출 수, 추정치 기준). 실측: 500은 청중 80건에도 미차단
-# 비용 -> 호출 수 추정: 최근 게이트웨이 호출 평균 비용을 [MIN, MAX]로 보정. 직원의 짧은 호출만 있으면 평균이 작아 추정이 부풀기 때문.
+# 비용 -> 호출 수 추정: 최근 게이트웨이 호출 평균 비용을 [MIN, MAX]로 보정. 사용자의 짧은 호출만 있으면 평균이 작아 추정이 부풀기 때문.
 DEFAULT_CALL_COST_USD = 0.000016  # 이력이 없을 때(청중 1건 실측 약 $0.000016, gpt-4o-mini)
 CALL_COST_MIN_USD, CALL_COST_MAX_USD = 0.000012, 0.0002
 CALL_COST_RECENT_N = 20

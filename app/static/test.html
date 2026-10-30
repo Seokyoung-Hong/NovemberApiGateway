@@ -10,7 +10,7 @@
 
 <h2>연결</h2>
 Base URL <input id="base" size="40"><br>
-Admin Key <input id="akey" size="30" value="demo-admin"><br>
+Admin Key <input id="akey" size="30" value="admin"><br>
 Mock/라이브 서버 Base <input id="lbase" size="40"> <a id="livelink" href="#" target="_blank">/live</a><br>
 <button onclick="saveCfg();show('o_conn',await_(api('/admin/dashboard')))">연결 확인 (GET /admin/dashboard)</button>
 <pre id="o_conn"></pre>
@@ -49,7 +49,7 @@ id <input id="c_id" size="4"><button onclick="run('o_adm','/admin/credentials/'+
 OpenRouter provision: role <select id="p_role"><option>PRIMARY</option><option>STANDBY</option></select>
 limit_usd <input id="p_lim" value="0.5" size="5">
 <button onclick="run('o_adm','/admin/openrouter/provision','POST',{role:v('p_role'),limit_usd:parseFloat(v('p_lim'))})">provision</button>
-<h3>CIDR</h3>
+<h3>CIDR (비어 있으면 모두 허용, <code>*</code> = 전체 허용)</h3>
 <button onclick="run('o_adm','/admin/cidrs')">목록</button>
 cidr <input id="d_cidr" size="16"> label <input id="d_label" size="10">
 <button onclick="run('o_adm','/admin/cidrs','POST',{cidr:v('d_cidr'),label:v('d_label')})">추가</button>
@@ -71,7 +71,7 @@ id <input id="ti_id" size="4"><button onclick="trusted('DELETE')">삭제</button
 <button onclick="run('o_adm','/admin/honeykeys')">허니키 목록</button>
 <pre id="o_adm"></pre>
 
-<h2>직원 채팅 (게이트웨이 /v1/chat/completions)</h2>
+<h2>사용자 채팅 (게이트웨이 /v1/chat/completions)</h2>
 토큰 선택 <select id="e_sel" onchange="el('e_tok').value=this.value"><option value="">(없음)</option></select>
 토큰 <input id="e_tok" size="40"><br>
 모델 <input id="e_model" value="gpt-4o-mini" size="16">
@@ -86,7 +86,7 @@ X-Demo-Source-IP <input id="e_ip" size="14"><br>
 <h2>WIF 호출</h2>
 sub <input id="w_sub" value="svc-a" size="14">
 <button onclick="wifToken()">/demo/wif/token 으로 JWT 받기</button>
-<button onclick="chatOnce(v('w_jwt'),'o_wif')">이 JWT로 직원 채팅 전송 (위 메시지/모델 사용)</button><br>
+<button onclick="chatOnce(v('w_jwt'),'o_wif')">이 JWT로 사용자 채팅 전송 (위 메시지/모델 사용)</button><br>
 JWT <input id="w_jwt" size="60">
 <pre id="o_wif"></pre>
 
@@ -143,7 +143,7 @@ var cfgInit = function () {
   var ls = {};
   try { ls = JSON.parse(localStorage.getItem("gwtest") || "{}"); } catch (e) {}
   el("base").value = ls.base || location.origin;
-  el("akey").value = ls.akey || "demo-admin";
+  el("akey").value = ls.akey || "admin";
   el("lbase").value = ls.lbase || location.origin;
 };
 function saveCfg() {
@@ -228,7 +228,7 @@ async function trusted(m) {
   el("o_adm").textContent = r.status === 404 ? "미지원 (404)\n" + r.text : fmt(r);
 }
 
-// ---- 직원 채팅
+// ---- 사용자 채팅
 async function chatOnce(token, outId) {
   outId = outId || "o_chat";
   var h = { Authorization: "Bearer " + token };

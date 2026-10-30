@@ -42,6 +42,9 @@ def _deny(status: int, reason: str, ip: str, token: str):
 
 
 def _ip_allowed(ip: str, cidrs) -> bool:
+    """허용 대역이 0개거나 `*`가 있으면 모두 허용(관리자가 등록하기 전 기본값)."""
+    if not cidrs or any(r["cidr"] == "*" for r in cidrs):
+        return True
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
@@ -131,7 +134,7 @@ async def chat_completions(request: Request, authorization: str = Header("")):
         return _deny(403, "ip_blocked", ip, token)
     if not _ip_allowed(ip, cidrs):
         return _deny(403, "ip_not_allowed", ip, token)
-    if not tok and token.count(".") == 2 and not token.startswith("nvm-"):  # 직원 측 WIF(OIDC JWT) → 서비스
+    if not tok and token.count(".") == 2 and not token.startswith("nvm-"):  # 사용자 측 WIF(OIDC JWT) → 서비스
         from app import wif_inbound  # 지연 import(순환 방지)
         try:
             tok = {"status": "ACTIVE", "service_id": wif_inbound.verify_jwt(token, ip)}
@@ -325,7 +328,7 @@ def list_cidrs():
 @admin.post("/cidrs")
 def add_cidr(b: CidrIn):
     try:
-        cidr = str(ipaddress.ip_network(b.cidr, strict=False))
+        cidr = "*" if b.cidr.strip() == "*" else str(ipaddress.ip_network(b.cidr.strip(), strict=False))
     except ValueError:
         raise HTTPException(400, "invalid cidr")
     with get_conn() as c:

@@ -1,4 +1,4 @@
-"""직원 측 WIF(OIDC JWT) 인바운드 인증 + 신뢰 규칙 관리 + 데모용 로컬 IdP. 계약: docs/contract.md J."""
+"""사용자 측 WIF(OIDC JWT) 인바운드 인증 + 신뢰 규칙 관리 + 데모용 로컬 IdP. 계약: docs/contract.md J."""
 import base64
 import json
 import os
@@ -214,9 +214,9 @@ def idp_token(b: IdpTokenIn):
 @demo.post("/demo/wif/seed")
 def demo_wif_seed():
     with get_conn() as c:
-        s = c.execute("SELECT id FROM service WHERE name='직원A'").fetchone()
+        s = c.execute("SELECT id FROM service WHERE name='userA'").fetchone()
         if not s:
-            raise HTTPException(404, "서비스 직원A 없음. 먼저 /demo/reset")
+            raise HTTPException(404, "서비스 userA 없음. 먼저 /demo/reset")
         r = c.execute("SELECT id FROM trusted_identity WHERE issuer=? AND subject_pattern='repo:november/*'",
                       (IDP_ISSUER,)).fetchone()
         if r:  # 멱등: 리셋으로 서비스 id가 바뀌었을 수 있어 갱신만

@@ -7,7 +7,7 @@ import time
 import httpx
 
 sys.stdout.reconfigure(encoding="utf-8")
-GW, ADM = "http://127.0.0.1:8000", {"X-Admin-Key": "demo-admin"}
+GW, ADM = "http://127.0.0.1:8000", {"X-Admin-Key": "admin"}
 BODY = {"model": "mock", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 50}
 c = httpx.Client(timeout=10)
 results = []  # (이름, 통과, 설명)
@@ -28,10 +28,10 @@ def dash():
 
 
 def attack_round(tag, toks, strict=True):
-    """공격 시작 → RECOVERED까지 관찰. (BLOCKED 경과 초, 최종 사고) 반환. 직원은 0.5초 간격 호출 유지."""
+    """공격 시작 → RECOVERED까지 관찰. (BLOCKED 경과 초, 최종 사고) 반환. 사용자는 0.5초 간격 호출 유지."""
     stop, stats = threading.Event(), {"ok": 0, "fail": 0}
 
-    def employee():
+    def user_loop():
         i = 0
         while not stop.is_set():
             try:
@@ -42,7 +42,7 @@ def attack_round(tag, toks, strict=True):
             i += 1
             stop.wait(0.5)
 
-    th = threading.Thread(target=employee, daemon=True)
+    th = threading.Thread(target=user_loop, daemon=True)
     th.start()
     c.post(f"{GW}/demo/attack/start")
     t0, seen, last, blocked_at = time.time(), [], None, None
@@ -59,14 +59,14 @@ def attack_round(tag, toks, strict=True):
         if d["status"] == "RECOVERED":
             break
         time.sleep(1)
-    time.sleep(2)  # 직원 호출이 새 키로 계속 성공하는지 잠시 더 관찰
+    time.sleep(2)  # 사용자 호출이 새 키로 계속 성공하는지 잠시 더 관찰
     stop.set()
     th.join()
     # 한도가 작으면 한 틱(2초≈10건)에 WARNING 구간을 건너뛸 수 있어 strict가 아니면 BLOCKED·RECOVERED만 본다
     need = ("SUSPECT", "WARNING", "BLOCKED", "RECOVERED") if strict else ("BLOCKED", "RECOVERED")
     check(f"[{tag}] 상태 전이 관찰", all(s in seen for s in need), "->".join(seen))
-    check(f"[{tag}] 차단 중 직원 호출 실패 0건", stats["fail"] == 0, f"성공 {stats['ok']} / 실패 {stats['fail']}")
-    check(f"[{tag}] 차단 후 직원 호출 200", all(call(t) == 200 for t in toks.values()))
+    check(f"[{tag}] 차단 중 사용자 호출 실패 0건", stats["fail"] == 0, f"성공 {stats['ok']} / 실패 {stats['fail']}")
+    check(f"[{tag}] 차단 후 사용자 호출 200", all(call(t) == 200 for t in toks.values()))
     inc = c.get(f"{GW}/admin/incidents", headers=ADM).json()
     if not inc:
         check(f"[{tag}] 사고 생성", False)
@@ -89,15 +89,27 @@ def attack_round(tag, toks, strict=True):
 
 print("== 1. 리셋")
 toks = c.post(f"{GW}/demo/reset").json()["tokens"]
-check("리셋·토큰 발급", set(toks) == {"직원A", "직원B"}, str(list(toks)))
+check("리셋·토큰 발급", set(toks) == {"userA", "userB"}, str(list(toks)))
 s = c.get(f"{GW}/admin/settings", headers=ADM).json()
 check("설정 기본값", s.get("unauthorized_call_limit") == 100, str(s))
 
-print("== 2. 정상 호출 / 허용 밖 IP")
+print("== 2. 정상 호출 / IP 정책")
 for n, t in toks.items():
     check(f"{n} 정상 호출 200", (s := call(t)) == 200, f"status={s}")
-s = call(toks["직원A"], "203.0.113.9")
-check("허용 밖 IP 403", s == 403, f"status={s}")
+check("리셋 후 허용 CIDR 0개", c.get(f"{GW}/admin/cidrs", headers=ADM).json() == [])
+check("CIDR 0개면 임의 IP 200", (s := call(toks["userA"], "203.0.113.9")) == 200, f"status={s}")
+cid = c.post(f"{GW}/admin/cidrs", headers=ADM, json={"cidr": "10.0.0.0/16", "label": "INTERNAL"}).json()["id"]
+try:
+    check("대역 등록 후 허용 밖 IP 403", (s := call(toks["userA"], "203.0.113.9")) == 403, f"status={s}")
+    check("대역 등록 후 허용 IP 200", (s := call(toks["userA"], "10.0.0.5")) == 200, f"status={s}")
+finally:
+    c.delete(f"{GW}/admin/cidrs/{cid}", headers=ADM)
+cid = c.post(f"{GW}/admin/cidrs", headers=ADM, json={"cidr": "*", "label": "ALL"}).json()["id"]
+try:
+    check("* 등록 시 임의 IP 200", (s := call(toks["userA"], "203.0.113.9")) == 200, f"status={s}")
+finally:
+    c.delete(f"{GW}/admin/cidrs/{cid}", headers=ADM)
+check("삭제 후 다시 모두 허용", (s := call(toks["userA"], "203.0.113.9")) == 200, f"status={s}")
 
 print("== 3. 공격 라운드 1 (한도 100건)")
 b1, _ = attack_round("한도100", toks)

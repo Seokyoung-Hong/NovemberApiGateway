@@ -9,17 +9,17 @@
 ### 2-1. 사용자·외부 행위자
 | ID | 이름 | 설명 |
 |---|---|---|
-| U1 | 직원 클라이언트 | 직원 PC·서비스. OpenAI 호환 API로 게이트웨이를 호출. 공급자 키를 모름 |
+| U1 | 사용자 클라이언트 | 사용자 PC·서비스. OpenAI 호환 API로 게이트웨이를 호출. 공급자 키를 모름 |
 | U2 | 대표(관리자) | 대시보드·테스트 페이지로 크레덴셜·한도·허용 IP·토큰을 관리(대표 대시보드 화면은 미구현, 현재는 `/test`) |
 | U3 | 공격자 / 청중 | 유출된 키로 **공급자에 직접** 호출(게이트웨이 우회) |
-| U4 | 외부 IdP (OIDC) | GitHub Actions·Google·Entra 등. 직원 서비스에 단기 JWT 발급(WIF). PoC는 로컬 가짜 IdP |
+| U4 | 외부 IdP (OIDC) | GitHub Actions·Google·Entra 등. 사용자 서비스에 단기 JWT 발급(WIF). PoC는 로컬 가짜 IdP |
 
 ### 2-2. 게이트웨이 앱 (FastAPI, 한 프로세스, 포트 8000/8800)
 | ID | 모듈 | 책임 |
 |---|---|---|
-| G1 | `gateway/router.py` — **중계·접근통제** | `/v1/chat/completions` OpenAI 호환 중계. 검사 순서: 허니키 일치 → 허니키 IP 임시 차단 → 출발 IP(허용 CIDR) → WIF JWT 또는 API 토큰 → 서비스 상태 → PRIMARY 크레덴셜 존재. 거부 로그 기록(허니키는 별도 `honeykey_event`) |
+| G1 | `gateway/router.py` — **중계·접근통제** | `/v1/chat/completions` OpenAI 호환 중계. 검사 순서: 허니키 일치 → 허니키 IP 임시 차단 → 출발 IP(허용 CIDR, 0개면 모두 허용) → WIF JWT 또는 API 토큰 → 서비스 상태 → PRIMARY 크레덴셜 존재. 거부 로그 기록(허니키는 별도 `honeykey_event`) |
 | G2 | `gateway/router.py` — **관리자 API** | 크레덴셜·CIDR·서비스(정지/재개)·토큰·설정·허니키 목록·거부 로그, 실제 공급자 키 프로비저닝(`/admin/{provider}/provision`) (`/admin/*`, X-Admin-Key) |
-| G3 | `wif_inbound.py` — **직원 측 WIF** | RS256 JWT 검증(서명·만료·audience·issuer), 신뢰 규칙(issuer+subject 패턴→서비스), 로컬 데모 IdP(`/idp/*`) |
+| G3 | `wif_inbound.py` — **사용자 측 WIF** | RS256 JWT 검증(서명·만료·audience·issuer), 신뢰 규칙(issuer+subject 패턴→서비스), 로컬 데모 IdP(`/idp/*`) |
 | G4 | `providers.py` — **공급자 어댑터** | mock / openrouter / openai 어댑터. `fetch_usage`(키별 누적: 호출 수·토큰·비용 중 있는 값), `revoke`, 응답 비용 추출, 지연(`lag_s`) |
 | D1 | `detector/router.py` — **탐지·대응 워커** | 2초마다 공급자 사용량 조회 → 게이트웨이 기록과 시점 정렬 비교 → 판정(NORMAL/SUSPECT/WARNING/BREACH) → 자동 대응 |
 | D2 | `detector/router.py` — **대시보드 API·데모 제어** | 상태·차액·시계열·사고·이벤트 조회, 공격 시뮬레이터(Mock 전용), 리셋(`/demo/reset`, `/demo/reset-openrouter`·`-openai`), 정리(`/demo/cleanup-*`), 허니키 호출 |
@@ -52,7 +52,7 @@
 ```mermaid
 flowchart LR
     subgraph Actors[행위자]
-        U1[직원 클라이언트]
+        U1[사용자 클라이언트]
         U2[대표/관리자]
         U3[공격자·청중]
         U4[외부 IdP / 로컬 IdP]
@@ -99,8 +99,8 @@ flowchart LR
 
 ## 4. 핵심 시퀀스
 ### 4-1. 정상 호출
-1. 직원이 `Authorization: Bearer <API 토큰 또는 JWT>`로 `POST /v1/chat/completions`.
-2. G1: 허니키 아님? → 허니키로 차단된 IP 아님? → 출발 IP ∈ 허용 CIDR? → G3가 JWT 검증 또는 토큰 해시 일치 → 서비스 ACTIVE?
+1. 사용자가 `Authorization: Bearer <API 토큰 또는 JWT>`로 `POST /v1/chat/completions`.
+2. G1: 허니키 아님? → 허니키로 차단된 IP 아님? → 출발 IP ∈ 허용 CIDR?(등록된 대역이 없으면 통과) → G3가 JWT 검증 또는 토큰 해시 일치 → 서비스 ACTIVE?
 3. 현재 `PRIMARY ACTIVE` 크레덴셜 선택, S2에서 키 복호화(WIF 크레덴셜은 STS 단기 토큰) → 공급자로 중계, 스트리밍 포함.
 4. 응답이 200이고 `usage`(또는 비용)가 있으면 `usage_log` 1행 기록 → 응답 반환(업스트림 401·네트워크 오류는 502).
 
@@ -131,8 +131,8 @@ sequenceDiagram
 - 비용만 주는 공급자는 비용 차이로 비교하고 호출 수를 평균 호출 비용으로 추정한다(`calls_estimated`).
 - 분 버킷을 주는 공급자(OpenAI)는 반영이 끝난 버킷 경계까지 누적 비교.
 
-### 4-3. 직원 측 WIF
-1. 직원 서비스가 IdP에서 단기 JWT(RS256)를 받는다.
+### 4-3. 사용자 측 WIF
+1. 사용자 서비스가 IdP에서 단기 JWT(RS256)를 받는다.
 2. 게이트웨이(G3)가 JWKS로 서명, `exp`, `aud`, `iss`를 검증하고 `sub`가 신뢰 규칙에 맞는지 확인 → 서비스로 매핑.
 3. 이후는 4-1의 3~4단계와 동일.
 
@@ -144,8 +144,10 @@ sequenceDiagram
 
 ## 5. 신뢰 경계 (그림에서 점선 영역)
 1. **인터넷 ↔ NPM(hack.sio2.kr)**: 공개 영역. 공개 모드에서 `/demo/*`·`/admin/*`·`/idp/token`은 관리자 키 필요, `/docs` 비활성.
+   - **경고**: 데모 관리자 키는 고정값 `admin`이라 추측 가능하다. 공개 서버에서는 NPM 단 접근 제한(IP·인증)을 함께 걸어야 한다.
+   - 사용자 중계 `/v1`의 IP 제한은 기본 꺼짐(허용 CIDR 0개 = 모두 허용). 관리자가 대역을 등록해야 제한된다.
 2. **NPM ↔ 게이트웨이(Tailscale)**: 신뢰 프록시. `X-Forwarded-For`는 신뢰 프록시일 때만 인정.
-3. **게이트웨이 ↔ 공급자**: 실제 키는 Vault에만 존재. 직원은 키를 보지 못한다.
+3. **게이트웨이 ↔ 공급자**: 실제 키는 Vault에만 존재. 사용자는 키를 보지 못한다.
 4. **공격자 ↔ 공급자**: 게이트웨이를 통과하지 않는 경로. 이 경로가 사용량 대조의 탐지 대상이다.
 
 ## 6. 배포 구조
@@ -156,7 +158,7 @@ sequenceDiagram
 ## 7. 그림 작성 가이드
 - **레이어**: 행위자 → (NPM) → 게이트웨이 앱(중계·탐지·관리) → 어댑터 → 공급자, 좌우로 저장소(SQLite·Vault)를 둔다.
 - **화살표 색 구분 권장**: 정상 호출(실선), 탐지 조회(파선), 공격 경로(빨강), 자동 폐기(굵은 선).
-- **강조할 것**: ① 공격자 경로가 게이트웨이를 우회한다 ② 탐지 워커가 공급자 값과 게이트웨이 기록을 **서로 다른 경로로** 얻어 비교한다 ③ 폐기·승격 후에도 직원 경로는 끊기지 않는다.
+- **강조할 것**: ① 공격자 경로가 게이트웨이를 우회한다 ② 탐지 워커가 공급자 값과 게이트웨이 기록을 **서로 다른 경로로** 얻어 비교한다 ③ 폐기·승격 후에도 사용자 경로는 끊기지 않는다.
 
 ## 8. 한계와 운영 전환
 | PoC | 운영 |

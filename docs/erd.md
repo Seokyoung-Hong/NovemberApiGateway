@@ -18,7 +18,7 @@ erDiagram
     }
     ALLOWED_CIDR {
         int id PK
-        string cidr
+        string cidr "CIDR 또는 *(전체). 행 0개 = 모두 허용"
         string label "INTERNAL|VPN"
     }
     SERVICE {
@@ -126,6 +126,7 @@ erDiagram
 - **PROVIDER 테이블 없음**: 공급자는 `credential.provider` 문자열(`mock`|`openrouter`|`openai`, 어댑터 `app/providers.py`). 인증 방식은 `credential.auth_mode`(API_KEY|WIF).
 - **RECONCILIATION 테이블 없음**: 대조는 워커가 `usage_log` 행 수 vs 공급자 보고 호출 수(`provider_usage.requests`)로 매 틱 계산(`effective_calls_diff`/`judge`, 금액 `effective_diff`는 참고). 결과는 `event`와 `incident`로만 남는다.
 - **탐지 흐름**: BREACH → `incident` 생성(credential당 1개) → 공급자 폐기 → `credential` REVOKED + STANDBY를 PRIMARY 승격(`replaced_by_id`, `new_credential_id`).
-- **직원 측 WIF**: `trusted_identity`(issuer + sub 글롭 → service). 공급자 쪽 WIF(`credential.auth_mode=WIF`)와 별개다. `/demo/reset`이 이 테이블도 비운다.
+- **허용 CIDR**: `allowed_cidr`가 비어 있으면 `/v1` 출발 IP는 모두 허용(리셋 직후 기본). 한 행이라도 있으면 그 대역만, `*` 행은 전체 허용.
+- **사용자 측 WIF**: `trusted_identity`(issuer + sub 글롭 → service). 공급자 쪽 WIF(`credential.auth_mode=WIF`)와 별개다. `/demo/reset`이 이 테이블도 비운다.
 - **허니키**: `honeykey_event` 발생 시 `incident(trigger_type=HONEYKEY, credential_id=NULL)`와 `event(HONEYKEY)` 기록.
 - **키 원문**: API_KEY는 `secret_enc`(vault 암호문)만 저장, WIF는 `secret_enc`가 없고 단기 토큰을 Mock STS에서 발급.

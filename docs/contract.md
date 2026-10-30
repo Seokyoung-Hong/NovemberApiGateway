@@ -1,7 +1,7 @@
 # 계약 (고정). 상수·스키마는 `app/contract.py`, `app/db.py`가 원본.
 
 실행: Mock `uvicorn app.mock_provider.main:app --port 9000` / 게이트웨이 `uvicorn app.main:app --port 8000` (프로젝트 루트, `.venv`).
-관리자 API(`/admin/*`)는 항상 헤더 `X-Admin-Key` 필요(값 = 환경변수 `ADMIN_KEY`, 기본 `demo-admin`). `/demo/*`·`/idp/token`은 `PUBLIC_MODE=1`일 때만 필요(K절). `/v1/*`·`/live*`·`/test`는 관리자 키 불필요. 모두 JSON, CORS 전체 허용(게이트웨이·Mock 모두).
+관리자 API(`/admin/*`)는 항상 헤더 `X-Admin-Key` 필요(값 = 환경변수 `ADMIN_KEY`, 기본 `admin`). `/demo/*`·`/idp/token`은 `PUBLIC_MODE=1`일 때만 필요(K절). `/v1/*`·`/live*`·`/test`는 관리자 키 불필요. 모두 JSON, CORS 전체 허용(게이트웨이·Mock 모두).
 시간은 응답에서 ISO8601(UTC) 문자열, DB는 epoch 초(float). 예외: `/live/stats.updated_at`은 epoch 초 정수, `/admin/usage/timeseries`의 `t`는 서버 로컬 시간 문자열.
 관리자 키 오류 응답: `/admin/credentials|settings|cidrs|services|tokens|honeykeys|access-denied|usage/*|trusted-identities|wif/*|{provider}/provision`와 공개 모드 가드는 401 `{"detail":"invalid_admin_key"}`, `/admin/dashboard|timeseries|incidents|events`는 401 `{"detail":"bad admin key"}`(문구만 다름, 둘 다 401).
 
@@ -21,7 +21,7 @@
 - 검사 순서(`app/gateway/router.py chat_completions`):
   ① 허니키 일치 → 401 `{"error":"invalid_token"}`(E절, `access_denied_log`에는 안 남고 `honeykey_event`로 기록)
   ② 출발 IP가 허니키로 임시 차단 중 → 403 `{"error":"ip_blocked"}`
-  ③ 출발 IP ∉ allowed_cidr → 403 `{"error":"ip_not_allowed"}` (허용 대역이 0개면 전부 거부)
+  ③ allowed_cidr가 1개 이상(`*` 없음)이고 출발 IP ∉ allowed_cidr → 403 `{"error":"ip_not_allowed"}` (허용 대역이 0개거나 `*`가 있으면 모두 허용)
   ④ 토큰이 게이트웨이 토큰이 아니고 점 3조각·`nvm-` 아님 → JWT 경로(J절), 실패 시 401 `{"error":"wif_*"}`
   ⑤ 토큰 해시 불일치 또는 REVOKED → 401 `{"error":"invalid_token"}`
   ⑥ service가 ACTIVE 아님 → 403 `{"error":"service_suspended"}`
@@ -40,7 +40,7 @@
 - `GET /admin/settings` → `{"unauthorized_call_limit": 100, "loss_limit_krw": 100000}`.
   `PUT /admin/settings` 본문에 **보낸 키만** 갱신(둘 다 양의 정수, 아니면 400), 응답은 갱신 후 GET과 같은 형태. 변경은 다음 워커 틱(≤`POLL_INTERVAL_S`=2초)부터 판정에 반영.
   `unauthorized_call_limit` = 허용하는 '설명되지 않는 호출 수'(**판정 기준**). `loss_limit_krw` = 참고 표시용 금액 한도(판정에 안 씀).
-- `GET /admin/cidrs` → `[{id,cidr,label}]`, `POST /admin/cidrs` `{cidr,label?(기본 INTERNAL)}` → `{id,cidr,label}`(cidr는 정규화, 잘못되면 400), `DELETE /admin/cidrs/{id}` → `{"ok":true}`
+- `GET /admin/cidrs` → `[{id,cidr,label}]`, `POST /admin/cidrs` `{cidr,label?(기본 INTERNAL)}` → `{id,cidr,label}`(cidr는 정규화, `*`는 그대로 저장, `*`·`0.0.0.0/0`·`::/0`는 전체 허용, 잘못되면 400). 빈 배열 = 모두 허용(기본값), `DELETE /admin/cidrs/{id}` → `{"ok":true}`
 - `GET /admin/services` → `[{id,name,status,tokens:[{id,token_masked,status,created_at}]}]` (토큰 목록 전용 GET은 없음)
 - `POST /admin/tokens` `{"service_name"}` → `{"id","service_id","token":"nvm-...(원문 1회)","token_masked"}` (service 없으면 생성)
 - `DELETE /admin/tokens/{id}` → `{"ok":true}`(REVOKED)
@@ -71,6 +71,7 @@
 | `updated_at` | ISO | 워커 마지막 틱 시각 |
 | `honeykey_hits` | `[{at,honeykey_masked,planted_at,source_ip}]` | 최근 5건(최신순) |
 | `blocked_ips` | `[{source_ip,until}]` | 허니키로 차단 중인 IP |
+| `ip_policy` | `"open"\|"restricted"` | 허용 CIDR이 0개거나 `*`가 있으면 `open`(모두 허용), 아니면 `restricted` |
 
 `credentials[]` 필드: `id, provider, auth_mode, role, status, masked, gateway_cost_krw, provider_cost_krw, diff_krw, diff_usd, gateway_calls, provider_calls, diff_calls, certain_diff_calls, calls_estimated`. 호출 수 값은 워커가 마지막으로 그 크레덴셜을 판정한 값(REVOKED 이후에는 마지막 값에 고정, 리셋 직후·첫 틱 전에는 0). `calls_estimated`는 비용으로 호출 수를 추정한 경우 true(OpenRouter).
 
@@ -94,10 +95,10 @@
 ### 데모
 - `POST /demo/attack/start` / `POST /demo/attack/stop` → `{attack_running}`. 공격 = 현재 PRIMARY(ACTIVE) credential 키로 **Mock `/v1/chat/completions`에 직접** `ATTACK_RPS`(5)건/초, `max_tokens=ATTACK_MAX_TOKENS`(2000, 건당 800원). 401 받으면 자동 종료+`ATTACK_STOPPED` 이벤트. Mock 모드 전용(실제 공급자 모드에서도 Mock으로 보내므로 탐지되지 않음).
 - `POST /demo/reset` → 공격 중지·대응 작업 취소·허니키 IP 차단 해제 → Mock `/demo/reset` 호출 → DB 전체 초기화(`trusted_identity` 포함) 후 시드:
-  설정 `unauthorized_call_limit`=100(`DEFAULT_LIMIT_CALLS`)·`loss_limit_krw`=100000, allowed_cidr(`127.0.0.1/32` INTERNAL, `::1/128` INTERNAL, `10.0.0.0/16` INTERNAL, `10.8.0.0/24` VPN),
+  설정 `unauthorized_call_limit`=100(`DEFAULT_LIMIT_CALLS`)·`loss_limit_krw`=100000, allowed_cidr는 비움(= 모두 허용, 관리자가 등록하면 그 대역만 허용),
   credential K1(API_KEY, PRIMARY, 키 값 고정 `contract.LEAKED_KEY` 기본 `sk-mock-K1-leaked-demo`, 마스킹 `sk-...demo`) → S1(API_KEY, STANDBY, `sk-mock-S1-<랜덤>`) → K2(WIF, STANDBY, audience `novem-wif`, 마스킹 `WIF:novem-wif`) 순서로 삽입(id 순서가 승격 순서),
-  service `직원A`,`직원B` 토큰 발급, 허니키 2개(`공개 저장소 .env.example`, `사내 위키 설정 예시`).
-  응답 `{"tokens":{"직원A":"nvm-...","직원B":"nvm-..."}, "honeykeys":{planted_at: 원문}, "note":"..."}`. `data/live_key.json`을 지워 `/live`를 `LEAKED_KEY`로 되돌린다.
+  service `userA`,`userB` 토큰 발급, 허니키 2개(`공개 저장소 .env.example`, `사내 위키 설정 예시`).
+  응답 `{"tokens":{"userA":"nvm-...","userB":"nvm-..."}, "honeykeys":{planted_at: 원문}, "note":"..."}`. `data/live_key.json`을 지워 `/live`를 `LEAKED_KEY`로 되돌린다.
   리셋마다 토큰이 새로 발급되고 WIF 신뢰 규칙이 지워진다 → WIF를 쓰려면 `POST /demo/wif/seed` 재실행(J절).
 - 실제 공급자 리셋·정리(`/demo/reset-{provider}`, `/demo/cleanup-{provider}`)는 G·I절, 허니키 호출(`/demo/honeypot/hit`)은 E절.
 
@@ -133,7 +134,7 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
 - `POST /admin/openrouter/provision` `{role:"PRIMARY"|"STANDBY", limit_usd?:0.5, name?}` → `{id, masked, role, hash_masked, leaked_key?}`.
   `november-<role>-<랜덤>` 키 생성(한도 limit_usd), vault 암호화 저장, credential(`provider='openrouter'`, `auth_mode='API_KEY'`, `provider_ref`=OpenRouter 키 hash).
   원문은 PRIMARY일 때만 `leaked_key`로 1회 반환하고 `data/live_key.json`(gitignore)에도 저장 → Mock `/live/config`가 그 키를 쓴다. ACTIVE PRIMARY가 이미 있으면(공급자 무관) 400. `POST /admin/credentials`에 `provider:"openrouter"`는 400.
-- `POST /demo/reset-openrouter` → `/demo/reset`과 같은 시드(CIDR·직원A/B 토큰·허니키·`loss_limit_krw`)에 기존 `november-` 키 삭제 후 K1(PRIMARY)·S1(STANDBY) 각 $0.5를 새로 만들어 넣는다(Mock 키·WIF 크레덴셜은 없음). `unauthorized_call_limit`=100(`OPENROUTER_LIMIT_CALLS`). 응답 = reset 응답 + `leaked_key`.
+- `POST /demo/reset-openrouter` → `/demo/reset`과 같은 시드(CIDR 비움·userA/B 토큰·허니키·`loss_limit_krw`)에 기존 `november-` 키 삭제 후 K1(PRIMARY)·S1(STANDBY) 각 $0.5를 새로 만들어 넣는다(Mock 키·WIF 크레덴셜은 없음). `unauthorized_call_limit`=100(`OPENROUTER_LIMIT_CALLS`). 응답 = reset 응답 + `leaked_key`.
   `POST /demo/reset`·`/demo/reset-openai`는 `data/live_key.json`을 지워 라이브 페이지를 `LEAKED_KEY`로 되돌린다(OpenRouter 키는 지우지 않음).
 - `POST /demo/cleanup-openrouter` → `{deleted:n}`. `november-` 키(비활성 포함)만 삭제.
 - 중계: PRIMARY·ACTIVE 크레덴셜의 provider로 분기(provider 필터 없음). OpenRouter면 `https://openrouter.ai/api/v1/chat/completions`, `model`은 그대로(없거나 `mock`/`demo`로 시작하면 `openai/gpt-4o-mini`), 본문에 `usage:{include:true}`를 넣어 응답 `usage.cost`(USD)로 `usage_log.cost_krw = USD × USD_TO_KRW(1400)`. 스트리밍은 마지막 청크 usage, cost가 없으면 gpt-4o-mini 단가로 토큰 추정.
@@ -175,35 +176,35 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
 - 시드 한도: reset-openrouter·reset-openai 모두 `unauthorized_call_limit`=100. 비율은 실제 공급자 0.05/0.2/0.35.
 - 최종 손실 재계산: 폐기 `revoke_lag_s + lag_s` 후(OpenAI 약 7분). `loss_calls = max(정렬 차이, 확실 유출)`, 오차 미차감.
 
-## J. 직원 측 WIF(OIDC)
-직원/서비스가 장기 토큰 대신 IdP가 서명한 단기 JWT(OIDC ID 토큰)로 게이트웨이에 인증한다. 구현 `app/wif_inbound.py`, 테이블 `trusted_identity`.
+## J. 사용자 측 WIF(OIDC)
+사용자/서비스가 장기 토큰 대신 IdP가 서명한 단기 JWT(OIDC ID 토큰)로 게이트웨이에 인증한다. 구현 `app/wif_inbound.py`, 테이블 `trusted_identity`.
 - 중계 분기: 허니키 → IP 차단 → **IP 허용 검사** 뒤, 게이트웨이 토큰과 일치하지 않고 Bearer 값이 점으로 나뉜 3조각이며 `nvm-`로 시작하지 않으면 JWT 경로. 통과하면 매핑된 service로 기존 경로(service ACTIVE 검사·중계·usage_log·탐지) 그대로.
 - 검증: `alg`는 **RS256만**(none·HS256 거부). `iss`로 신뢰 규칙 조회 → 헤더 `kid`로 JWKS 키 선택·서명 검증 → `exp`/`nbf` 30초 여유 → `aud` = 규칙 `audience`(없으면 setting `wif_audience`, 기본 `november-gateway`) → `sub`가 `subject_pattern`(fnmatch 글롭)과 일치.
   외부 JWKS는 규칙의 `jwks_uri`를 httpx로 조회해 5분 캐시. 로컬 IdP issuer는 프로세스 내 키 직접 사용.
-- 거부: 401 `{"error":"wif_invalid_signature|wif_expired|wif_audience_mismatch|wif_untrusted_identity|wif_malformed"}`. `access_denied_log` + `event(ACCESS_DENIED)` 기록, `token_masked` = 마스킹한 `sub`(JWT 원문 미저장). 허용 밖 IP는 JWT여도 403 `ip_not_allowed`.
+- 거부: 401 `{"error":"wif_invalid_signature|wif_expired|wif_audience_mismatch|wif_untrusted_identity|wif_malformed"}`. `access_denied_log` + `event(ACCESS_DENIED)` 기록, `token_masked` = 마스킹한 `sub`(JWT 원문 미저장). 허용 대역이 등록돼 있으면 그 밖 IP는 JWT여도 403 `ip_not_allowed`.
 - `GET /admin/trusted-identities` → `[{id,issuer,subject_pattern,audience,service_id,jwks_uri,created_at}]`
 - `POST /admin/trusted-identities` `{issuer, subject_pattern, audience?, service_id | service_name, jwks_uri?}` → 위 항목 1개(서비스 없으면 404, issuer·subject_pattern 비면 400). `DELETE /admin/trusted-identities/{id}` → `{"ok":true}`(없으면 404).
 - `GET /admin/wif/settings` → `{"wif_audience"}`, `PUT` 같은 형태(빈 값 400).
-- 신뢰 규칙 예시(GitHub Actions): `{"issuer":"https://token.actions.githubusercontent.com","subject_pattern":"repo:november/*:ref:refs/heads/main","audience":"november-gateway","service_name":"직원A","jwks_uri":"https://token.actions.githubusercontent.com/.well-known/jwks"}`
+- 신뢰 규칙 예시(GitHub Actions): `{"issuer":"https://token.actions.githubusercontent.com","subject_pattern":"repo:november/*:ref:refs/heads/main","audience":"november-gateway","service_name":"userA","jwks_uri":"https://token.actions.githubusercontent.com/.well-known/jwks"}`
 - 데모 로컬 IdP(`DEMO_MODE=1`일 때만 라우트 등록): 시작 시 RSA 키쌍을 메모리에 생성(kid `local-1`), issuer = 환경변수 `IDP_ISSUER`(기본 `http://localhost:8000/idp`, 문자열 비교용이라 실제 주소와 달라도 동작).
   `GET /idp/.well-known/jwks.json` → `{keys:[{kty,use,alg,kid,n,e}]}`, `POST /idp/token` `{sub, audience?, ttl_s?(기본 600, 1~3600으로 보정)}` → `{token, expires_in}`.
-  `POST /demo/wif/seed` → 규칙(issuer=로컬 IdP, `repo:november/*` → `직원A`) 1개, 멱등(재실행 시 service_id만 갱신). `직원A` 없으면 404 "먼저 /demo/reset".
+  `POST /demo/wif/seed` → 규칙(issuer=로컬 IdP, `repo:november/*` → `userA`) 1개, 멱등(재실행 시 service_id만 갱신). `userA` 없으면 404 "먼저 /demo/reset".
   `POST /demo/wif/token` `{sub?}`(본문 생략 가능, 기본 `repo:november/app:ref:refs/heads/main`) → `{token, expires_in:600}`.
 - 한계: 실제 외부 IdP(Google/GitHub) 연동은 미검증(jwks_uri 조회만 구현), 키 교체 자동화 없음(새 kid는 캐시 5분 만료 후 반영), 로컬 IdP 키는 재시작 시 바뀜(기존 토큰 무효), `/demo/reset`은 `trusted_identity`도 지움(리셋 후 `/demo/wif/seed` 재실행 필요, K절), JWKS 조회는 동기(최대 5초), `jti` 재사용 방지·토큰 폐기 목록 없음(짧은 TTL로 완화), IP 거부 로그의 `token_masked`는 기존 방식(JWT 앞 3자·뒤 4자).
 
 ## K. 공개 모드
 인터넷 공개(NPM → 이 PC)용. 구현 `app/clientip.py`(관리자 키 검사·출발 IP·가드, 게이트웨이와 Mock 공용).
-- 환경변수: `PUBLIC_MODE=1`(기본 0 = 기존 동작), `ADMIN_KEY`(기본 `demo-admin`), `TRUSTED_PROXIES`(쉼표 구분 IP, 기본 빈 값), `DEMO_MODE`(기본 1). 키 비교는 `hmac.compare_digest`.
+- 환경변수: `PUBLIC_MODE=1`(기본 0 = 기존 동작), `ADMIN_KEY`(기본 `admin`), `TRUSTED_PROXIES`(쉼표 구분 IP, 기본 빈 값), `DEMO_MODE`(기본 1). 키 비교는 `hmac.compare_digest`.
 - `PUBLIC_MODE=1`일 때 `X-Admin-Key` 필요: `/admin/*`(공개 모드와 무관하게 항상), `/demo/*`(게이트웨이·Mock 모두), `/idp/token`. 없거나 틀리면 401 `{"detail":"invalid_admin_key"}`(대시보드 계열은 `bad admin key`, 맨 위 참조).
   공개 유지: `/v1/*`(토큰·IP·WIF), `/live*`, `/test`(페이지 자체), `/idp/.well-known/jwks.json`. `/docs`·`/redoc`·`/openapi.json`은 비활성(404, 시작 시 결정).
   Mock의 `/v1/*`·`/usage`·`/revoke`·`/sts/token`은 인증이 없으므로 NPM은 Mock에 `/live*`만 넘길 것.
 - 출발 IP(`/v1` IP 검사·허니키 차단, Mock `/live/chat` 속도 제한 공통): 직접 접속 IP(`request.client.host`)가 `TRUSTED_PROXIES`에 있으면 `X-Forwarded-For`의 가장 오른쪽 신뢰되지 않은 값(모두 신뢰 프록시면 첫 값), 아니면 XFF 무시.
   `X-Demo-Source-IP`는 `DEMO_MODE`이고 (공개 모드가 아니거나 유효한 `X-Admin-Key`가 있을 때)만 인정. `/demo/honeypot/hit`는 내부 호출에 관리자 키를 붙인다.
 - `/demo/reset`은 `trusted_identity`도 지운다. WIF를 쓰려면 리셋 후 `POST /demo/wif/seed` 재실행. 응답에 `note` 필드로 안내.
-- 테스트 서버: `scripts/run_test_server.ps1`(origin/main → `C:\Users\tjrdu\novemberdeploy\src`, Gateway 8800·Mock 9800, Tailscale IP(또는 `BIND_IP`)에만 바인드, `.env` 미복사이고 `UPSTREAM_API_KEY`·`OPENROUTER_MANAGEMENT_KEY`·`OPENAI_ADMIN_KEY`를 지운 채 실행 → Mock 가짜 응답만, 실제 공급자 모드 불가, 키 `novemberdeploy\admin_key.txt`, `TRUSTED_PROXIES=100.69.18.101`(NPM)), 종료 `scripts/stop_test_server.ps1`.
+- 테스트 서버: `scripts/run_test_server.ps1`(origin/main → `C:\Users\tjrdu\novemberdeploy\src`, Gateway 8800·Mock 9800, Tailscale IP(또는 `BIND_IP`)에만 바인드, `.env` 미복사이고 `UPSTREAM_API_KEY`·`OPENROUTER_MANAGEMENT_KEY`·`OPENAI_ADMIN_KEY`를 지운 채 실행 → Mock 가짜 응답만, 실제 공급자 모드 불가, 관리자 키 `admin` 고정(`novemberdeploydmin_key.txt`에도 기록), `TRUSTED_PROXIES=100.69.18.101`(NPM)), 종료 `scripts/stop_test_server.ps1`.
 
 ## L. OpenAI 실제 판별 검증 결과 (2026-10-31)
-- 실제 OpenAI로 end-to-end 확인: 직원 5건 + 청중 직접 10건 → 반영은 **95초**에 15건이 한꺼번에 보임(이전 단독 측정은 381초). 키 ID 필터 조회와 프로젝트 전체 `group_by=api_key_id` 조회가 같은 값이고, 호출은 K1 한 키에만 집계됨.
+- 실제 OpenAI로 end-to-end 확인: 사용자 5건 + 청중 직접 10건 → 반영은 **95초**에 15건이 한꺼번에 보임(이전 단독 측정은 381초). 키 ID 필터 조회와 프로젝트 전체 `group_by=api_key_id` 조회가 같은 값이고, 호출은 K1 한 키에만 집계됨.
 - 탐지: 95초에 SUSPECT(확실 유출 7건 = 공급자 15 − 게이트웨이 5 − 오차 3, 한도 100 대비 7%). 420초 경과로 버킷이 확정되자 대시보드가 공급자 15 / 게이트웨이 5 / 차이 7을 표시. 한도를 20으로 낮추면 1초 만에 BREACH → 서비스 계정 삭제(약 3초) → 예비키 승격 → RECOVERED.
 - 한도 100에서는 청중 10건으로 SUSPECT까지만 간다. WARNING/BREACH 확인은 한도를 낮춘 상태에서만 했다.
 - 반영 지연은 편차가 크다(95초·381초). `lag_s=420`은 유지해도 오탐은 없고 탐지가 늦어질 수 있을 뿐이다.

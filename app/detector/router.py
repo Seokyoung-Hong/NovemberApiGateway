@@ -69,7 +69,7 @@ def _gw(c, cid, col="COUNT(*)", until=None, before=None):
 
 def per_call(c, cid, metric):
     """비용(원)/토큰 -> 호출 수 환산용 1건 기대값: 최근 N건 평균을 [하한, 상한]으로 보정.
-    ponytail: 직원 호출과 무단 호출의 길이가 다르면 여전히 오차가 있다(추정치, calls_estimated=true)."""
+    ponytail: 사용자 호출과 무단 호출의 길이가 다르면 여전히 오차가 있다(추정치, calls_estimated=true)."""
     col, lo, hi, default = (("cost_krw", CALL_COST_MIN_USD * USD_TO_KRW, CALL_COST_MAX_USD * USD_TO_KRW,
                              DEFAULT_CALL_COST_USD * USD_TO_KRW) if metric == "cost" else (TOKENS_COL, 20, 1000, 150))
     avg = c.execute(f"SELECT AVG(v) FROM (SELECT {col} AS v FROM usage_log WHERE credential_id=? ORDER BY id DESC LIMIT ?)",
@@ -215,7 +215,7 @@ async def respond(http, cred, diff, lim, diff_krw, lim_krw):
     lag = f", 공급자 반영까지 약 {ad.revoke_lag_s:g}초 소요" if ad.revoke_lag_s >= 1 else ""
     tl.append({"at": iso(time.time()), "step": "REVOKE_PROVIDER_KEY", "detail": f"{cred['masked']} 공급자 폐기{lag}",
                "ok": ok})
-    with get_conn() as c:  # 폐기·승격은 즉시 DB 반영(직원 호출 503 방지)
+    with get_conn() as c:  # 폐기·승격은 즉시 DB 반영(사용자 호출 503 방지)
         c.execute("UPDATE credential SET status='REVOKED' WHERE id=?", (cred["id"],))
         sb = c.execute("SELECT * FROM credential WHERE provider=? AND role='STANDBY' AND status='ACTIVE' "
                        "ORDER BY id LIMIT 1", (cred["provider"],)).fetchone()
@@ -316,6 +316,7 @@ def dashboard():
             "ORDER BY e.id DESC LIMIT 5")]
         act = c.execute("SELECT id,provider,auth_mode,masked FROM credential "
                         "WHERE role='PRIMARY' AND status='ACTIVE' ORDER BY id LIMIT 1").fetchone()
+        cidrs = [r["cidr"] for r in c.execute("SELECT cidr FROM allowed_cidr")]
     _, warn_r, block_r = ratios(act["provider"] if act else "mock")
     return {"status": status, "limit_krw": lim, "warn_at_krw": lim * warn_r, "block_at_krw": lim * block_r,
             "diff_krw": dt, "diff_usd": max(0.0, pt - gt) / USD_TO_KRW, "gateway_cost_krw": gt, "provider_cost_krw": pt,
@@ -324,7 +325,8 @@ def dashboard():
             "active_credential": dict(act) if act else None, "credentials": rows,
             "attack_running": attack_running(), "incident_id": inc["id"] if inc and status in ("BLOCKED", "RECOVERED") else None,
             "updated_at": iso(state["updated_at"] or time.time()), "honeykey_hits": hits,
-            "blocked_ips": [{"source_ip": ip, "until": iso(u)} for ip, u in blocked_ips.items() if u > time.time()]}
+            "blocked_ips": [{"source_ip": ip, "until": iso(u)} for ip, u in blocked_ips.items() if u > time.time()],
+            "ip_policy": "restricted" if cidrs and "*" not in cidrs else "open"}
 
 
 @router.get("/admin/timeseries", dependencies=[Depends(admin)])
@@ -495,9 +497,6 @@ async def _reset(provider: str):
             c.execute("INSERT INTO setting(key,value) VALUES('loss_limit_krw','100000')")
             c.execute("INSERT INTO setting(key,value) VALUES('unauthorized_call_limit',?)",
                       (str(OPENROUTER_LIMIT_CALLS if real else DEFAULT_LIMIT_CALLS),))
-            c.executemany("INSERT INTO allowed_cidr(cidr,label) VALUES(?,?)",
-                          [("127.0.0.1/32", "INTERNAL"), ("::1/128", "INTERNAL"),
-                           ("10.0.0.0/16", "INTERNAL"), ("10.8.0.0/24", "VPN")])
             for role, raw, ref in keys:
                 insert_provider_cred(c, provider, role, raw, ref)
             if not real:
@@ -507,7 +506,7 @@ async def _reset(provider: str):
                               "VALUES('mock','API_KEY',?,?,?,?,?)", (role, vault.encrypt(key), mask_key(key), key, now))
                 c.execute("INSERT INTO credential(provider,auth_mode,role,masked,audience,provider_ref,created_at) "
                           "VALUES('mock','WIF','STANDBY',?,'novem-wif','wif:novem-wif',?)", ("WIF:novem-wif", now))
-            for name in ("직원A", "직원B"):
+            for name in ("userA", "userB"):
                 sid = c.execute("INSERT INTO service(name) VALUES(?)", (name,)).lastrowid
                 tok = "nvm-" + secrets.token_urlsafe(24)
                 c.execute("INSERT INTO gateway_token(service_id,token_hash,token_masked,created_at) VALUES(?,?,?,?)",

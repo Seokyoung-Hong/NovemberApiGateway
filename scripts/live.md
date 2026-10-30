@@ -13,10 +13,10 @@
 
 ## OpenRouter 모드 (청중이 실제 OpenRouter 키로 실제 GPT 사용)
 1. `.env`에 `OPENROUTER_MANAGEMENT_KEY=<관리 키>`(직접 입력, 출력·슬라이드 금지). 서버 2개 기동(위 3번).
-2. 프로비저닝: `POST http://127.0.0.1:8000/demo/reset-openrouter` → 응답 `leaked_key`(K1 원문), `tokens`(직원A/B). 이전 `november-` 키는 자동 삭제, K1·S1 각 $0.5 한도, 판정 한도 100호출(추정).
+2. 프로비저닝: `POST http://127.0.0.1:8000/demo/reset-openrouter` → 응답 `leaked_key`(K1 원문), `tokens`(userA/B). 이전 `november-` 키는 자동 삭제, K1·S1 각 $0.5 한도, 판정 한도 100호출(추정).
    응답의 `leaked_key`만 슬라이드에 표시(이 키는 발표용이라 노출 전제). `/live` 페이지에는 자동으로 같은 키가 채워진다.
 3. 청중 접속: 터널 URL + `/live` QR(위 4번). 청중 호출은 게이트웨이를 거치지 않고 OpenRouter로 직접 간다.
-4. 차단: 대시보드가 추정 호출 수로 SUSPECT(5%)→WARNING(20%)→BLOCKED(35%). 사용액 반영 약 6초 + 폴링 때문에 실제보다 늦게 보이고, 폐기 후 청중 401까지 최대 약 20초(실측 7초). 직원 호출은 S1로 계속 200.
+4. 차단: 대시보드가 추정 호출 수로 SUSPECT(5%)→WARNING(20%)→BLOCKED(35%). 사용액 반영 약 6초 + 폴링 때문에 실제보다 늦게 보이고, 폐기 후 청중 401까지 최대 약 20초(실측 7초). 사용자 호출은 S1로 계속 200.
    한도는 100으로 시드된다(실측: 청중 약 2건/초에서 45건 무렵 BLOCKED, 추정 손실 53건). 청중이 많으면 `PUT /admin/settings`로 올린다.
    상태는 하강할 때만 10초 유지(히스테리시스)라 SUSPECT/WARNING이 경계에서 깜빡이지 않는다.
 5. 정리: `POST /demo/cleanup-openrouter` → `{"deleted":2}`. 이후 `POST /demo/reset`으로 Mock 모드 복귀(라이브 페이지 키도 Mock 키로 돌아감).
