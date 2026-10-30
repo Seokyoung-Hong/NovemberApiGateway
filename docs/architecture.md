@@ -9,23 +9,24 @@
 ### 2-1. 사용자·외부 행위자
 | ID | 이름 | 설명 |
 |---|---|---|
-| U1 | 사용자 클라이언트 | 사용자 PC·서비스. OpenAI 호환 API로 게이트웨이를 호출. 공급자 키를 모름 |
+| U1 | 사용자 클라이언트(서비스·워크로드) | 사용자 PC·서비스·CI. OpenAI 호환 API로 게이트웨이를 호출. API 토큰 또는 워크로드 WIF(JWT)로 인증 |
 | U2 | 대표(관리자) | 대시보드·테스트 페이지로 크레덴셜·한도·허용 IP·토큰을 관리(대표 대시보드 화면은 미구현, 현재는 `/test`) |
 | U3 | 공격자 / 청중 | 유출된 키로 **공급자에 직접** 호출(게이트웨이 우회) |
-| U4 | 외부 IdP (OIDC) | GitHub Actions·Google·Entra 등. 사용자 서비스에 단기 JWT 발급(WIF). PoC는 로컬 가짜 IdP |
+| U4 | 회사 IdP (OIDC / SSO) | Google Workspace·Entra ID 등(사람 로그인), GitHub Actions·Kubernetes 등(워크로드). 단기 ID/액세스 토큰(JWT)을 발급한다. PoC는 로컬 가짜 IdP |
+| U6 | **개인 사용자(사람)** | 회사 IdP로 SSO 로그인(브라우저는 Authorization Code + PKCE, CLI·IDE는 Device Authorization Grant)해 단기 토큰을 받아 게이트웨이를 호출. 사용량·예산이 **사람 단위**로 귀속된다(**목표 구성**, PoC는 서비스 단위 매핑) |
 
 ### 2-2. 게이트웨이 앱 (FastAPI, 한 프로세스, 포트 8000/8800)
 | ID | 모듈 | 책임 |
 |---|---|---|
 | G1 | `gateway/router.py` — **중계·접근통제** | `/v1/chat/completions` OpenAI 호환 중계. 검사 순서: 허니키 일치 → 허니키 IP 임시 차단 → 출발 IP(허용 CIDR, 0개면 모두 허용) → WIF JWT 또는 API 토큰 → 서비스 상태 → PRIMARY 크레덴셜 존재. 거부 로그 기록(허니키는 별도 `honeykey_event`) |
 | G2 | `gateway/router.py` — **관리자 API** | 크레덴셜·CIDR·서비스(정지/재개)·토큰·설정·허니키 목록·거부 로그, 실제 공급자 키 프로비저닝(`/admin/{provider}/provision`) (`/admin/*`, X-Admin-Key) |
-| G3 | `wif_inbound.py` — **사용자 측 WIF** | RS256 JWT 검증(서명·만료·audience·issuer), 신뢰 규칙(issuer+subject 패턴→서비스), 로컬 데모 IdP(`/idp/*`) |
+| G3 | `wif_inbound.py` — **WIF 검증(워크로드·개인 사용자)** | RS256 JWT 검증(서명·만료·audience·issuer, alg 화이트리스트), 신뢰 규칙(issuer + `sub` 패턴 → 서비스)으로 매핑, 로컬 데모 IdP(`/idp/*`). **목표**: 개인 사용자 토큰의 `email`·`groups` 클레임으로 사용자·정책(모델·예산)에 매핑 |
 | G4 | `providers.py` — **공급자 어댑터** | mock / openrouter / openai 어댑터. `fetch_usage`(키별 누적: 호출 수·토큰·비용 중 있는 값), `revoke`, 응답 비용 추출, 지연(`lag_s`) |
 | D1 | `detector/router.py` — **탐지·대응 워커** | 2초마다 공급자 사용량 조회 → 게이트웨이 기록과 시점 정렬 비교 → 판정(NORMAL/SUSPECT/WARNING/BREACH) → 자동 대응 |
 | D2 | `detector/router.py` — **대시보드 API·데모 제어** | 상태·차액·시계열·사고·이벤트 조회, 공격 시뮬레이터(Mock 전용), 리셋(`/demo/reset`, `/demo/reset-openrouter`·`-openai`), 정리(`/demo/cleanup-*`), 허니키 호출 |
 | U5 | `usage.py` + `pricing.py` — **사용량 집계·예측** | 서비스별 토큰·비용 집계, 모델별 단가표 기반 예상 비용, 선형 월말 예측, 월 예산 |
 | T1 | `testpage.py` + `static/test.html` | 디자인 없는 기능 테스트 페이지 `/test` |
-| C1 | `contract.py`, `db.py`, `vault.py` | 공용 상수·판정 함수·`.env` 로드 / SQLite 스키마 / API Key 암호화(Fernet) |
+| C1 | `contract.py`, `db.py`, `vault.py` | 공용 상수·판정 함수·`.env` 로드 / SQLite 스키마 / 공급자 키 암호화 모듈(**목표: KMS 봉투 암호화, PoC: Fernet**) |
 | C2 | `clientip.py` | 관리자 키 비교, 출발 IP 결정(신뢰 프록시 XFF·`X-Demo-Source-IP`), 공개 모드 가드(`/demo/*`·`/idp/token`). 게이트웨이·Mock 공용 |
 | C3 | `main.py` | 앱 조립(라우터 5개 등록, CORS 전체 허용, 시작 시 `init_db`·워커 기동) |
 
@@ -38,8 +39,10 @@
 ### 2-4. 저장소
 | ID | 이름 | 내용 |
 |---|---|---|
-| S1 | SQLite (`gateway.db`) | setting, allowed_cidr, service, gateway_token(해시), credential(암호문·마스킹), usage_log, provider_usage, access_denied_log, incident, event, honeykey, honeykey_event, trusted_identity |
-| S2 | Vault (프로세스 내 Fernet) | API Key 암호화·복호화. 운영에서는 KMS/Secrets Manager로 교체 |
+| S1 | DB (PoC: SQLite `gateway.db`) | setting, allowed_cidr, service, gateway_token(해시), credential(**암호문 + 감싼 DEK + 키 버전**, 마스킹), usage_log, provider_usage, access_denied_log, incident, event, honeykey, honeykey_event, trusted_identity. 평문 키는 저장하지 않는다 |
+| S2 | **KMS / Vault Transit** (PoC: 프로세스 내 Fernet) | 마스터 키(KEK)는 외부 KMS에만 존재하고 반출되지 않는다. 앱은 DEK 감싸기·풀기만 요청한다(IAM 인증, 암호화 컨텍스트 `credential_id`+`provider`) |
+| S3 | 감사 로그 (append-only) | 키 등록·복호화·사용·폐기·교체 이벤트(시각·신원·`credential_id`·결과, **키 값 제외**) |
+| S4 | 관리 키 저장소 (별도) | 공급자 관리 키(OpenRouter Management, OpenAI Admin). 일반 키와 다른 KEK·탐지 워커 전용 신원 |
 
 ### 2-5. 외부 AI 공급자
 | ID | 이름 | 사용량 조회 | 키 폐기 | 반영 지연(실측) |
@@ -58,7 +61,8 @@ flowchart LR
         U1["사용자 클라이언트"]
         U2["대표/관리자"]
         U3["청중 / 공격자"]
-        U4["외부 IdP (OIDC)"]
+        U4["회사 IdP (OIDC / SSO)"]
+        U6["개인 사용자 (사람)<br/>브라우저 · CLI · IDE"]
         P2["OpenRouter"]
         P3["OpenAI"]
     end
@@ -80,14 +84,18 @@ flowchart LR
             M1["가짜 공급자<br/>사용량 · 폐기 · STS"]
             M2["청중 라이브 /live"]
         end
-        S1[("SQLite<br/>로컬 파일")]
-        S2["Vault<br/>Fernet 암호화"]
+        S1[("DB<br/>암호문 + 감싼 DEK")]
+        S2["KMS / Vault Transit<br/>KEK 반출 불가 - PoC: Fernet"]
+        S3[("감사 로그<br/>append-only")]
+        S4["관리 키 저장소<br/>Management/Admin 키"]
     end
 
     U1 -- "HTTPS + Bearer 토큰 또는 JWT" --> NPM
     U2 -- "HTTPS + X-Admin-Key" --> NPM
     U3 -- "HTTPS + 유출 키 (속도 제한)" --> NPM
-    U4 -. "JWT 발급 (OIDC)" .-> U1
+    U4 -. "워크로드 JWT 발급 (OIDC)" .-> U1
+    U6 -- "OIDC 로그인<br/>Auth Code + PKCE / Device Code" --> U4
+    U6 -- "HTTPS + 단기 ID/액세스 토큰 (JWT)" --> NPM
     G3 -. "HTTPS JWKS 조회" .-> U4
     NPM -- "사설 LAN HTTP<br/>XFF는 신뢰 프록시만" --> G1
     NPM -- "사설 LAN HTTP" --> G2
@@ -110,8 +118,11 @@ flowchart LR
     D1 -- "비교 · 판정 · 사고" --> S1
     D2 --> S1
     U5 --> S1
-    G2 -- "Fernet 암호화 저장" --> S2
-    G4 -- "복호화" --> S2
+    G2 -- "봉투 암호화 요청<br/>TLS + IAM, 평문 1회" --> S2
+    G4 -- "DEK 복호화 (IAM)<br/>메모리 캐시 TTL" --> S2
+    G2 -. "등록·사용 이벤트" .-> S3
+    G4 -. "복호화·사용 이벤트" .-> S3
+    D1 -- "관리 키 읽기<br/>전용 신원" --> S4
 ```
 
 **범례**: 실선 = 정상 경로, 점선 = 보조·우회 경로(청중/공격자의 직접 호출은 게이트웨이를 거치지 않음). 구간별 프로토콜은 5-1절 표 참조.
@@ -150,10 +161,31 @@ sequenceDiagram
 - 비용만 주는 공급자는 비용 차이로 비교하고 호출 수를 평균 호출 비용으로 추정한다(`calls_estimated`).
 - 분 버킷을 주는 공급자(OpenAI)는 반영이 끝난 버킷 경계까지 누적 비교.
 
-### 4-3. 사용자 측 WIF
-1. 사용자 서비스가 IdP에서 단기 JWT(RS256)를 받는다.
+### 4-3. 워크로드 WIF (서비스·CI) — PoC 구현됨
+1. 사용자 서비스(CI·서버)가 IdP에서 단기 JWT(RS256)를 받는다.
 2. 게이트웨이(G3)가 JWKS로 서명, `exp`, `aud`, `iss`를 검증하고 `sub`가 신뢰 규칙에 맞는지 확인 → 서비스로 매핑.
 3. 이후는 4-1의 3~4단계와 동일.
+
+### 4-3-1. 개인 사용자 WIF (사람) — 목표 구성(PoC는 같은 JWT 경로의 `sub` 매핑까지)
+```mermaid
+sequenceDiagram
+    participant U as 개인 사용자(브라우저/CLI/IDE)
+    participant I as 회사 IdP (OIDC/SSO)
+    participant G as 게이트웨이(G3·G1)
+    participant P as AI 공급자
+    U->>I: SSO 로그인 (Auth Code + PKCE, CLI는 Device Code, MFA는 IdP 정책)
+    I-->>U: 단기 ID/액세스 토큰 (JWT, 15~60분)
+    U->>G: 요청 + Bearer JWT (HTTPS)
+    G->>I: JWKS 조회 (캐시)
+    G->>G: 서명·exp·aud·iss 검증, email·groups 클레임 → 사용자·정책 매핑
+    G->>P: 공급자 키(KMS 복호화)로 중계
+    G->>G: 사용량을 사람 단위로 기록 (예산·모델 정책 적용)
+```
+- **장기 비밀이 없다**: 사용자는 API 키를 받지 않고, 토큰은 짧게 살며 갱신은 IdP가 한다.
+- **오프보딩 즉시 반영**: IdP에서 계정을 비활성화하면 토큰이 만료되고 갱신이 거부되어 접근이 사라진다(게이트웨이 토큰 폐기가 따로 필요 없다).
+- **귀속과 정책**: `sub`/`email`로 사용량을 사람 단위로 집계하고, `groups` 클레임으로 허용 모델·월 예산을 정한다(그룹 → 정책 매핑 테이블).
+- **PoC와의 차이**: PoC는 JWT의 `sub` 패턴을 서비스에 매핑하는 단계까지 구현되어 있다(서비스 단위 귀속). SSO 로그인 화면, Device Code, 그룹 기반 정책, 사람 단위 예산은 설계만 있다.
+
 
 ### 4-4. 허니키
 게이트웨이에 심어 둔 가짜 토큰으로 접근 → 호출자에게는 평범한 401, 내부에서 `honeykey_event`·사고(HONEYKEY)·출발 IP 10분 임시 차단.
@@ -166,7 +198,9 @@ sequenceDiagram
    - **경고**: 데모 관리자 키는 고정값 `admin`이라 추측 가능하다. 공개 서버에서는 NPM 단 접근 제한(IP·인증)을 함께 걸어야 한다.
    - 사용자 중계 `/v1`의 IP 제한은 기본 꺼짐(허용 CIDR 0개 = 모두 허용). 관리자가 대역을 등록해야 제한된다.
 2. **NPM ↔ 게이트웨이(Proxmox 사설 LAN)**: 신뢰 프록시. 게이트웨이 CT는 NPM에서만 접근하도록 Proxmox 방화벽으로 제한한다. `X-Forwarded-For`는 신뢰 프록시일 때만 인정.
-3. **게이트웨이 ↔ 공급자**: 실제 키는 Vault에만 존재. 사용자는 키를 보지 못한다.
+3. **게이트웨이 ↔ 공급자**: 실제 키는 암호문(DB)과 KMS에만 존재하고 평문은 사용 순간 메모리에만 잠깐 있다. 사용자는 키를 보지 못한다.
+3-2. **사용자·워크로드 ↔ 회사 IdP ↔ 게이트웨이**: 인증은 IdP가 하고(MFA·계정 상태), 게이트웨이는 토큰 검증과 정책 매핑만 한다. 신뢰 대상은 등록된 issuer와 `sub`·`groups` 규칙뿐이다.
+3-1. **게이트웨이 ↔ KMS·관리 키 저장소·감사 로그**: IAM 인증된 TLS 호출. 등록(쓰기)·사용(복호화)·탐지(관리 키) 권한을 서로 다른 신원으로 나눈다. 상세는 `docs/key-security-design.md`.
 4. **공격자 ↔ 공급자**: 게이트웨이를 통과하지 않는 경로. 이 경로가 사용량 대조의 탐지 대상이다.
 
 ## 5-1. 통신 구간별 보안 프로토콜 (가볍게)
@@ -179,11 +213,15 @@ sequenceDiagram
 | 4 | 게이트웨이 → AI 공급자(OpenAI·OpenRouter) | HTTPS (TLS 1.2+, 시스템 CA 검증) | 공급자 API 키(Bearer). WIF 크레덴셜은 STS 15분 단기 토큰 | 키는 Vault에서 복호화해 요청마다 사용 |
 | 5 | 탐지 워커 → 공급자 사용량·폐기 API | HTTPS | 별도 관리 키(OpenRouter Management, OpenAI Admin) — 환경변수로만 보관 | 최소 권한 키 권장 |
 | 6 | 사용자 서비스 → IdP → 게이트웨이(WIF) | HTTPS(JWKS 조회) | JWT 서명(RS256만 허용, alg 화이트리스트), `exp`·`aud`·`iss` 검증, 신뢰 규칙(`sub` 패턴) | PoC는 로컬 가짜 IdP(HTTP) |
-| 7 | 게이트웨이 → 저장소(SQLite, 같은 호스트) | 로컬 파일(네트워크 없음) | 공급자 키는 Fernet(AES-128-CBC + HMAC-SHA256)으로 암호화 저장, 토큰은 해시, 응답엔 마스킹만 | 암호화 키는 환경변수(운영: KMS) |
+| 7 | 게이트웨이 → 저장소(DB, 같은 호스트 또는 사설망) | 로컬 파일 또는 사설망 TLS | 공급자 키는 **봉투 암호화**(DEK로 AES-256-GCM, DEK는 KMS의 KEK로 감쌈, 암호화 컨텍스트 바인딩), 토큰은 SHA-256 해시, 응답엔 마스킹만 | PoC: Fernet(AES-128-CBC + HMAC-SHA256), 환경변수 키 |
+| 9 | 게이트웨이 → KMS / Vault Transit | HTTPS (TLS) | **IAM 인증**, KEK는 반출 불가(감싸기·풀기만), 복호화 이벤트 감사 | 키 사용 평면 신원만 복호화 허용, 등록 평면은 쓰기 전용 |
+| 10 | 탐지 워커 → 관리 키 저장소 | HTTPS (TLS) | 탐지 워커 전용 신원, 별도 KEK | 중계 프로세스는 관리 키를 읽지 못한다 |
+| 11 | 게이트웨이 → 감사 로그 | HTTPS (TLS) | append-only, 키 값 미포함 | 사용 이상 탐지·사후 추적용 |
+| 12 | 개인 사용자 ↔ 회사 IdP / → 게이트웨이 | HTTPS (TLS) | OIDC **Authorization Code + PKCE**(브라우저), **Device Authorization Grant**(CLI·IDE), 단기 토큰(15~60분), 게이트웨이는 RS256 서명·`exp`·`aud`·`iss`·`groups` 검증 | 장기 비밀 없음, 오프보딩은 IdP 비활성화로 즉시 반영, 사람 단위 귀속(목표 구성) |
 | 8 | 공격자 → 공급자(우회 경로) | HTTPS | 유출된 키 | 게이트웨이를 거치지 않으므로 **사용량 대조로 탐지** |
 
 - 요약: **바깥(인터넷) 구간은 모두 TLS(NPM에서 종료), 내부 구간은 Proxmox 사설 LAN**, 애플리케이션 계층 인증은 구간마다 토큰·키·JWT로 나뉜다.
-- 한계: 사설 LAN 안의 NPM→게이트웨이는 평문 HTTP다. 데모용 IdP·STS는 HTTP. 운영에서는 mTLS와 KMS를 적용한다.
+- 한계: 사설 LAN 안의 NPM→게이트웨이는 평문 HTTP다. 데모용 IdP·STS는 HTTP. PoC는 KMS 대신 환경변수 Fernet 키를 쓴다(격차 목록은 `docs/key-security-design.md` 8절). 운영에서는 mTLS와 KMS 봉투 암호화를 적용한다.
 
 ## 6. 배포 구조
 - **로컬 개발**: Mock 9000 + 게이트웨이 8000, SQLite 파일, `scripts/dev.ps1`.
@@ -192,10 +230,11 @@ sequenceDiagram
 - 환경변수: `PUBLIC_MODE`, `ADMIN_KEY`, `TRUSTED_PROXIES`, `DEMO_MODE`(기본 1, 로컬 IdP·`X-Demo-Source-IP`), `MOCK_BASE_URL`, `DB_PATH`, `VAULT_KEY`, `LEAKED_KEY`, `IDP_ISSUER`, `UPSTREAM_API_KEY`·`UPSTREAM_BASE_URL`(Mock 실제 AI 패스스루), `LIVE_MODEL`, `OPENROUTER_MANAGEMENT_KEY`, `OPENAI_ADMIN_KEY`·`OPENAI_PROJECT_ID`. 테스트 서버는 실제 키 3종(`UPSTREAM_API_KEY`·`OPENROUTER_MANAGEMENT_KEY`·`OPENAI_ADMIN_KEY`)을 지운 채 실행한다(Mock만).
 
 ## 7. 그림 작성 가이드
-- **레이어**: 행위자 → (NPM) → 게이트웨이 앱(중계·탐지·관리) → 어댑터 → 공급자, 좌우로 저장소(SQLite·Vault)를 둔다.
+- **레이어**: 행위자 → (NPM) → 게이트웨이 앱(중계·탐지·관리) → 어댑터 → 공급자, 좌우로 저장소(DB·KMS·감사 로그·관리 키 저장소)를 둔다. **KMS와 봉투 암호화는 목표 구성이므로 PoC(Fernet, 환경변수 키)와 점선·색으로 구분**하고, 평면 분리(등록/사용/탐지)를 화살표로 드러낸다.
 - **화살표 색 구분 권장**: 정상 호출(실선), 탐지 조회(파선), 공격 경로(빨강), 자동 폐기(굵은 선).
 - **강조할 것**: ① 공격자 경로가 게이트웨이를 우회한다 ② 탐지 워커가 공급자 값과 게이트웨이 기록을 **서로 다른 경로로** 얻어 비교한다 ③ 폐기·승격 후에도 사용자 경로는 끊기지 않는다.
 
+- **WIF 두 종류를 함께 그린다**: 워크로드 WIF(서비스·CI → JWT)와 개인 사용자 WIF(사람 → 회사 IdP SSO → 단기 토큰). 개인 사용자 WIF는 목표 구성이므로 PoC 구현 범위와 구분해 표시한다.
 - **구간 라벨**: 화살표마다 5-1절의 프로토콜(HTTPS/TLS, 사설 LAN HTTP, Bearer, JWT 등)을 짧게 표기한다.
 - **그림에 넣지 않을 것**: vLLM(자체 GPU) 구성(2-6절)은 해커톤 시연 전용이라 컴포넌트도·시퀀스도·배포도에 그리지 않는다.
 
@@ -205,9 +244,10 @@ sequenceDiagram
 | PoC | 운영 |
 |---|---|
 | SQLite | Postgres 등 외부 DB, 이중화 |
-| Fernet 키를 환경변수로 | KMS / Secrets Manager |
+| Fernet 키를 환경변수로(고정 기본값 폴백) | **KMS 봉투 암호화**(DEK/KEK, 암호화 컨텍스트), 키 버전·자동 교체, 감사 로그, 관리 키 별도 저장소·전용 신원, 가능하면 WIF·동적(JIT) 키 |
 | 단일 프로세스 워커 | 별도 워커·큐, 공급자별 폴링 격리 |
 | Mock/로컬 IdP | 실제 IdP(JWKS 캐시·키 교체) |
 | 고정 관리자 키 | SSO·역할 기반 접근 |
+| 서비스 단위 JWT 매핑(`sub`→서비스, 로컬 IdP) | **개인 사용자 WIF**: 회사 IdP SSO(PKCE·Device Code), `email`·`groups` 클레임 기반 사람 단위 귀속·모델·예산 정책, 오프보딩 즉시 반영 |
 | 공급자 지연만큼 탐지 지연 | 공급자 한도·알림과 병행, 지연을 사용자에게 명시 |
-- 게이트웨이 자체가 침해되면 Vault 키까지 노출될 수 있다(허니키로 침해 시도를 탐지하는 보완).
+- 게이트웨이 자체가 침해되면 키 사용 권한까지 노출될 수 있다. 키가 반출되지 않는 KMS·짧은 캐시 TTL·사용 감사로 피해를 줄이고, 허니키와 사용량 대조로 침해를 탐지한다.
