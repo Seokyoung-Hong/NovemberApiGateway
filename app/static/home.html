@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Ntrophy Gateway</title>
+<style>
+:root { --bg:#f4f5f7; --card:#fff; --ink:#191f28; --sub:#6b7684; --line:#e5e8eb; --blue:#3182f6; --red:#f04452; }
+@media (prefers-color-scheme: dark) { :root { --bg:#17171c; --card:#202027; --ink:#f2f4f6; --sub:#9ba3af; --line:#2e2e36; } }
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font-family: Pretendard, system-ui, -apple-system, "Segoe UI", sans-serif; display: flex; flex-direction: column; padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom)); gap: 14px; height: 100dvh; overflow: hidden; }
+h1 { margin: 0; font-size: 20px; letter-spacing: -.03em; }
+h1 small { display: block; margin-top: 4px; font-size: 13px; font-weight: 500; color: var(--sub); letter-spacing: 0; }
+nav { flex: 1; min-height: 0; display: grid; grid-template-rows: repeat(3, 1fr); gap: 12px; }
+a { display: flex; flex-direction: column; justify-content: center; gap: 6px; padding: 0 22px; border-radius: 24px; background: var(--card); border: 2px solid var(--line); color: inherit; text-decoration: none; }
+a:active { transform: scale(.98); }
+a b { font-size: 24px; letter-spacing: -.04em; }
+a span { font-size: 14px; color: var(--sub); }
+a.dash { border-color: var(--blue); } a.dash b { color: var(--blue); }
+a.atk { background: var(--red); border-color: var(--red); color: #fff; box-shadow: 0 10px 30px rgba(240,68,82,.35); }
+a.atk span { color: rgba(255,255,255,.85); }
+@media (min-width: 760px) {
+  body { padding: 40px; gap: 28px; }
+  h1 { font-size: 28px; }
+  nav { grid-template-rows: none; grid-template-columns: repeat(3, 1fr); gap: 20px; max-height: 480px; margin: auto 0; }
+  a { padding: 0 32px; } a b { font-size: 32px; } a span { font-size: 16px; }
+  a:hover { transform: translateY(-4px); }
+}
+</style>
+</head>
+<body>
+<h1>Ntrophy Gateway<small>AI API 키 유출 탐지·자동 차단 데모</small></h1>
+<nav>
+  <a class="dash" href="ui/index.html" data-s><b>대시보드</b><span>대표 · 실시간 탐지와 차단 현황</span></a>
+  <a href="ui/employee.html" data-s><b>직원 사용자</b><span>게이트웨이로 채팅 · 끊김 없이 계속</span></a>
+  <a class="atk" href="ui/live.html" data-s><b>공격자</b><span>유출된 키로 직접 호출 · 곧 차단됩니다</span></a>
+</nav>
+<script>document.querySelectorAll('a[data-s]').forEach(a => a.search = '?server=' + encodeURIComponent(location.origin));</script>
+</body>
+</html>

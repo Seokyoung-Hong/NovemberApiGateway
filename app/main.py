@@ -4,6 +4,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 
 from app.clientip import public_guard
 from app.contract import PUBLIC_MODE
@@ -32,3 +35,11 @@ app.include_router(detector_router)
 app.include_router(usage_router)
 app.include_router(wif_router)
 app.include_router(test_router)
+
+
+@app.get("/", include_in_schema=False)
+def home():
+    return FileResponse(Path(__file__).parent / "static" / "home.html")
+
+
+app.mount("/ui", StaticFiles(directory=Path(__file__).parent / "static" / "ui", html=True), name="ui")  # 웹 화면(ntrophy-gateway 프런트)
