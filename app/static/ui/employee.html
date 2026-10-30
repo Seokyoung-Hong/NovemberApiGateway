@@ -6,7 +6,8 @@
 <title>직원 AI 채팅</title>
 <meta name="description" content="직원용 채팅 페이지. 게이트웨이 토큰으로 호출하며, 유출 키가 폐기돼도 예비 키로 끊김 없이 이어진다.">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css">
-<link rel="stylesheet" href="css/app.css?v=3">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="css/app.css?v=4">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2303b26c'/%3E%3Ccircle cx='16' cy='12' r='5' fill='white'/%3E%3Cpath d='M7 26c1.5-5 5-7 9-7s7.5 2 9 7' fill='white'/%3E%3C/svg%3E">
 </head>
 <body class="chat-body" data-state="active">
@@ -27,7 +28,7 @@
   <section class="chat-intro">
     <h2>공급자 키 없이<br>게이트웨이 토큰으로 써요</h2>
     <p>유출된 키가 차단돼도 게이트웨이가 예비 키로 바꿔서, 같은 토큰으로 계속 대화할 수 있어요.</p>
-    <div class="card tight" style="margin-top:16px;background:var(--surface-2);box-shadow:none">
+    <div class="card tight" style="margin-top:16px;background:var(--surface-2)">
       <div class="field" style="margin-bottom:12px"><span>누구로 호출할까요?</span><div class="seg full" id="whoSeg"></div></div>
       <div class="field" style="margin-bottom:12px"><span>어디에서 호출할까요?</span>
         <div class="seg full" id="ipSeg"><button data-ip="" aria-pressed="true">사내망</button><button data-ip="203.0.113.57" aria-pressed="false">외부 카페 Wi-Fi</button></div></div>
@@ -47,9 +48,9 @@
   </div>
 </div>
 
-<script src="js/sim.js?v=3"></script>
-<script src="js/api.js?v=3"></script>
-<script src="js/ui.js?v=3"></script>
-<script src="js/employee.js?v=3"></script>
+<script src="js/sim.js?v=4"></script>
+<script src="js/api.js?v=4"></script>
+<script src="js/ui.js?v=4"></script>
+<script src="js/employee.js?v=4"></script>
 </body>
 </html>

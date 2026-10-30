@@ -6,11 +6,11 @@
   const { $, $$, esc, icon, n, won, time, ago, toast, sheet, closeSheet, confirmSheet, copy, lineChart, tween } = UI;
 
   const PAGES = [
-    { id: 'home', label: '홈', icon: 'home' },
-    { id: 'usage', label: '사용량', icon: 'chart' },
-    { id: 'keys', label: '키·한도', icon: 'key' },
-    { id: 'access', label: '접근 제어', icon: 'shield' },
-    { id: 'incidents', label: '사고', icon: 'alert' },
+    { id: 'home', label: '홈', icon: 'home', sub: '게이트웨이 기록과 공급자 보고를 2초마다 대조해요' },
+    { id: 'usage', label: '사용량', icon: 'chart', sub: '게이트웨이가 중계한 호출의 토큰과 비용' },
+    { id: 'keys', label: '키·한도', icon: 'key', sub: '판정 기준이 되는 한도와 공급자 크레덴셜' },
+    { id: 'access', label: '접근 제어', icon: 'shield', sub: '누가 어디에서 게이트웨이를 부를 수 있는지' },
+    { id: 'incidents', label: '사고', icon: 'alert', sub: '자동 차단과 허니키 탐지가 남긴 기록' },
   ];
 
   const STATUS = {
@@ -61,6 +61,7 @@
     const page = PAGES.find((p) => p.id === id) || PAGES[0];
     st.page = page.id;
     $('#pageTitle').textContent = page.label;
+    $('#pageSub').textContent = page.sub;
     renderNav();
     const v = $('#view');
     v.innerHTML = '';
@@ -95,7 +96,7 @@
         </div>
       </section>
 
-      <section class="grid g-main" style="margin-top:16px">
+      <section class="grid g-main" style="margin-top:var(--gap)">
         <div class="stack">
           <div class="card">
             <div class="card-h">
@@ -237,12 +238,12 @@
           <div id="budgetBox"></div>
         </div>
       </section>
-      <section class="grid g-4" style="margin-top:16px" id="uKpis"></section>
-      <div class="card" style="margin-top:16px">
+      <section class="kpis k4" style="margin-top:var(--gap)" id="uKpis"></section>
+      <div class="card" style="margin-top:var(--gap)">
         <div class="card-h"><div><h2 id="uTsTitle">시간대별 호출</h2><p>막대에 올리면 서비스별 호출과 비용이 보여요</p></div></div>
         <div class="chart" id="uTs" style="height:200px"></div>
       </div>
-      <section class="grid g-main" style="margin-top:16px">
+      <section class="grid g-main" style="margin-top:var(--gap)">
         <div class="card"><div class="card-h"><div><h2>서비스별 비용</h2><p>누르면 모델별 내역을 볼 수 있어요</p></div></div><div class="bars" id="uBars"></div></div>
         <div class="card"><div class="card-h"><h2>서비스별 월말 예측</h2></div><div class="list" id="uPer"></div><p class="muted" style="font-size:12px;margin:14px 0 0" id="uNote"></p></div>
       </section>`;
@@ -277,15 +278,15 @@
       $('#uKpis').innerHTML = [
         ['호출', `${n(t.calls)}건`, '성공(200)만'], ['입력 토큰', n(t.input_tokens), ''], ['출력 토큰', n(t.output_tokens), ''],
         ['비용', won(t.cost_krw), `단가표 기준 ${won(t.estimated_cost_krw)}`],
-      ].map(([l, val, s]) => `<div class="card tight"><div class="kpi-l">${l}</div><div class="kpi-v num">${val}</div><div class="kpi-s">${s || '&nbsp;'}</div></div>`).join('');
+      ].map(([l, val, s]) => `<div class="kpi"><div class="kpi-l">${l}</div><div class="kpi-v num">${val}</div><div class="kpi-s">${s || '&nbsp;'}</div></div>`).join('');
       const max = Math.max(1, ...sum.services.map((s) => s.cost_krw));
       $('#uBars').innerHTML = sum.services.map((s) => `<div class="bar-row" style="cursor:pointer" data-svc="${s.service_id}">
-        <div class="bl"><span class="row-ic sm">${icon('user')}</span>${esc(s.name || '알 수 없음')}</div><div class="bv num">${won(s.cost_krw)}</div>
+        <div class="bl">${esc(s.name || '알 수 없음')}</div><div class="bv num">${won(s.cost_krw)}</div>
         <div class="bar-track"><div class="bar-fill" style="width:${s.cost_krw / max * 100}%"></div></div>
         <div class="bs">호출 ${n(s.calls)}건 · 토큰 ${n(s.input_tokens + s.output_tokens)} · ${s.models.map((m) => esc(m.model)).join(', ')}</div></div>`).join('')
         || `<div class="empty">${icon('chart')}이 기간에는 호출이 없어요<br><span style="font-size:13px">직원이 게이트웨이를 쓰면 여기에 집계돼요</span></div>`;
       $$('#uBars [data-svc]').forEach((el) => { el.onclick = () => modelSheet(sum.services.find((s) => s.service_id === +el.dataset.svc)); });
-      $('#uPer').innerHTML = fc.per_service.map((p) => `<div class="row"><div class="row-ic sm">${icon('user')}</div><div class="row-b"><div class="row-t"><span>${esc(p.name)}</span></div><div class="row-s">${won(p.rate_cost_krw_per_hour)}/시간</div></div><div class="row-e"><b class="num">${won(p.projected_month_cost_krw)}</b></div></div>`).join('')
+      $('#uPer').innerHTML = fc.per_service.map((p) => `<div class="row"><div class="row-b"><div class="row-t"><span>${esc(p.name)}</span></div><div class="row-s">${won(p.rate_cost_krw_per_hour)}/시간</div></div><div class="row-e"><b class="num">${won(p.projected_month_cost_krw)}</b></div></div>`).join('')
         || `<div class="empty" style="padding:16px">최근 1시간 호출이 없어요</div>`;
       $('#uNote').textContent = fc.note;
     } catch (e) { toast(e.message, 'bad'); }
@@ -342,8 +343,8 @@
             <div class="stepper"><button id="limDown" aria-label="줄이기">−</button><input id="limIn" class="num" inputmode="numeric" aria-label="허용 무단 호출 수"><button id="limUp" aria-label="늘리기">+</button></div>
             <div class="inline-form">${[30, 50, 100, 200].map((x) => `<button class="chip" data-lim="${x}">${x}건</button>`).join('')}</div>
           </div>
-          <div class="grid g-3" style="margin-top:20px" id="limPreview"></div>
-          <div class="callout info" style="margin-top:16px">${icon('bell')}<span>차단선을 한도의 70%에 두는 이유: 공급자 집계 지연(2초)과 폴링(2초) 동안 들어오는 호출을 흡수해서 최종 손실이 한도 아래에 머물게 하려는 거예요.</span></div>
+          <div class="kpis k3" style="margin-top:20px" id="limPreview"></div>
+          <div class="callout info" style="margin-top:var(--gap)">${icon('bell')}<span>차단선을 한도의 70%에 두는 이유: 공급자 집계 지연(2초)과 폴링(2초) 동안 들어오는 호출을 흡수해서 최종 손실이 한도 아래에 머물게 하려는 거예요.</span></div>
           <label class="field" style="margin-top:8px"><span>참고 금액 한도 (원, 판정에 쓰지 않아요)</span><input class="input num" id="lossIn" inputmode="numeric"></label>
           <button class="btn block" id="limSave">저장하기</button>
         </div>
@@ -352,7 +353,7 @@
           <div id="provBox"></div>
         </div>
       </section>
-      <div class="card" style="margin-top:16px">
+      <div class="card" style="margin-top:var(--gap)">
         <div class="card-h"><div><h2>공급자 크레덴셜</h2><p>원문은 Vault에 암호화해 저장하고 화면에는 마스킹만 보여요</p></div><div class="spacer"></div><button class="btn sm" id="addCred">${icon('plus')}키 등록</button></div>
         <div class="list" id="credAll"></div>
       </div>`;
@@ -457,7 +458,7 @@
           <div class="list" id="svcList"></div>
         </div>
       </section>
-      <section class="grid g-2" style="margin-top:16px">
+      <section class="grid g-2" style="margin-top:var(--gap)">
         <div class="card">
           <div class="card-h"><div><h2>WIF 신뢰 규칙</h2><p>IdP가 서명한 단기 JWT(OIDC)를 서비스에 연결해요</p></div><div class="spacer"></div><button class="btn sm soft" id="tiAdd">${icon('plus')}규칙</button></div>
           <div class="list" id="tiList"></div>
@@ -469,7 +470,7 @@
           <div id="blockedIps"></div>
         </div>
       </section>
-      <div class="card" style="margin-top:16px">
+      <div class="card" style="margin-top:var(--gap)">
         <div class="card-h"><div><h2>최근 거부 기록</h2><p>막힌 호출의 출발 IP와 이유</p></div><div class="spacer"></div><button class="icon-btn" id="denRefresh" aria-label="새로고침">${icon('refresh')}</button></div>
         <div class="table-wrap"><table class="table"><thead><tr><th>시각</th><th>출발 IP</th><th>이유</th><th>토큰</th><th></th></tr></thead><tbody id="denRows"></tbody></table></div>
       </div>`;
@@ -582,7 +583,7 @@
 
   // ================= 사고 =================
   function viewIncidents(v) {
-    v.innerHTML = `<div class="card"><div class="card-h"><div><h2>사고 기록</h2><p>자동 차단과 허니키 탐지가 남긴 기록이에요</p></div></div><div class="list" id="incList"></div></div>`;
+    v.innerHTML = `<div class="card" style="max-width:880px"><div class="card-h"><h2>사고 기록</h2><div class="spacer"></div><span class="muted" id="incCount"></span></div><div class="list" id="incList"></div></div>`;
     loadIncidents();
   }
 
@@ -598,7 +599,8 @@
           <div class="row-b"><div class="row-t"><span>${hk ? '허니키 사용 탐지' : `${esc(i.credential_masked)} 유출 차단`}</span><span class="badge ${done ? 'ok' : hk ? 'warn' : 'bad'}">${{ OPEN: '진행 중', ROTATED: '전환됨', RESOLVED: '복구됨' }[i.status] || i.status}</span></div>
           <div class="row-s">${time(i.detected_at)} · ${hk ? esc((i.timeline[0] || {}).detail || '') : `손실 ${n(i.loss_calls)}건 / 한도 ${n(i.limit_calls)}건${i.new_credential_masked ? ` · ${esc(i.new_credential_masked)}로 전환` : ''}`}</div></div>
           <div class="row-e">${icon('arrow', 'width="18" height="18" style="color:var(--ink-4)"')}</div></div>`;
-      }).join('') || `<div class="empty">${icon('shield')}아직 사고가 없어요</div>`;
+      }).join('') || `<div class="empty" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span style="flex:1;min-width:220px">아직 사고가 없어요. 자동 차단이나 허니키 탐지가 일어나면 시각, 새어 나간 호출 수, 전환한 키가 여기에 남아요.</span><button class="btn sm soft" onclick="document.getElementById('demoBtn').click()">${icon('play')}데모 제어 열기</button></div>`;
+      $('#incCount').textContent = list.length ? `${n(list.length)}건` : '';
       $$('[data-inc]', host).forEach((r) => { r.onclick = () => incidentSheet(+r.dataset.inc); });
     } catch (e) { toast(e.message, 'bad'); }
   }
