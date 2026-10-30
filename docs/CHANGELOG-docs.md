@@ -63,3 +63,4 @@
 | architecture.md 외 | vLLM(자체 GPU) 구성이 실제 아키텍처 그림에 들어갈 수 있게 서술됨 | vLLM을 "해커톤 데모 전용, 아키텍처 그림 제외"로 표기하고 architecture.md 컴포넌트 표에서 P4 행을 제거, 2-6절·그림 작성 가이드에 제외 규칙 추가 |
 | architecture.md | 구간별 보안 프로토콜 서술 없음 | 5-1절 "통신 구간별 보안 프로토콜" 표(8개 구간)와 그림 작성 가이드의 구간 라벨 항목 추가 |
 | architecture.md | 컴포넌트도에 구간별 보안 프로토콜·NPM·Tailscale 경계가 없었음 | 3절 Mermaid 다이어그램을 NPM 노드, 인터넷/Tailscale 경계, 화살표별 프로토콜 라벨로 다시 그림(5-1절과 일치) |
+| architecture.md | 게이트웨이 구간이 Tailscale 기준으로 서술됨 | 결정 반영: NPM이 단일 진입점, 서버는 Proxmox CT. 다이어그램 경계를 Proxmox 사설 LAN으로 바꾸고 5·5-1·6절 정정. 이 PC+Tailscale은 "현재 데모 구동(임시)"로 구분 |

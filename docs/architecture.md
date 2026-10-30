@@ -65,7 +65,7 @@ flowchart LR
 
     NPM["NPM hack.sio2.kr<br/>TLS 종료 · HTTPS 강제"]
 
-    subgraph TS["Tailscale 내부망 (WireGuard 암호화)"]
+    subgraph PVE["Proxmox 서버 (집 사설 LAN) - 게이트웨이 CT"]
         subgraph GW["게이트웨이 앱 - FastAPI"]
             G1["중계 · 접근통제<br/>허니키 → IP → 토큰/WIF → 서비스"]
             G3["WIF 검증<br/>JWT RS256 · 신뢰 규칙"]
@@ -89,12 +89,12 @@ flowchart LR
     U3 -- "HTTPS + 유출 키 (속도 제한)" --> NPM
     U4 -. "JWT 발급 (OIDC)" .-> U1
     G3 -. "HTTPS JWKS 조회" .-> U4
-    NPM -- "WireGuard + HTTP<br/>XFF는 신뢰 프록시만" --> G1
-    NPM -- "WireGuard + HTTP" --> G2
-    NPM -- "WireGuard + HTTP" --> D2
-    NPM -- "WireGuard + HTTP" --> U5
-    NPM -- "WireGuard + HTTP" --> T1
-    NPM -- "WireGuard + HTTP (/live)" --> M2
+    NPM -- "사설 LAN HTTP<br/>XFF는 신뢰 프록시만" --> G1
+    NPM -- "사설 LAN HTTP" --> G2
+    NPM -- "사설 LAN HTTP" --> D2
+    NPM -- "사설 LAN HTTP" --> U5
+    NPM -- "사설 LAN HTTP" --> T1
+    NPM -- "사설 LAN HTTP (/live)" --> M2
     G1 -. "JWT 검증" .-> G3
     G1 --> G4
     G4 -- "HTTPS + 공급자 API 키<br/>WIF는 STS 15분 토큰" --> P2
@@ -165,7 +165,7 @@ sequenceDiagram
 1. **인터넷 ↔ NPM(hack.sio2.kr)**: 공개 영역. 공개 모드에서 `/demo/*`·`/admin/*`·`/idp/token`은 관리자 키 필요, `/docs` 비활성.
    - **경고**: 데모 관리자 키는 고정값 `admin`이라 추측 가능하다. 공개 서버에서는 NPM 단 접근 제한(IP·인증)을 함께 걸어야 한다.
    - 사용자 중계 `/v1`의 IP 제한은 기본 꺼짐(허용 CIDR 0개 = 모두 허용). 관리자가 대역을 등록해야 제한된다.
-2. **NPM ↔ 게이트웨이(Tailscale)**: 신뢰 프록시. `X-Forwarded-For`는 신뢰 프록시일 때만 인정.
+2. **NPM ↔ 게이트웨이(Proxmox 사설 LAN)**: 신뢰 프록시. 게이트웨이 CT는 NPM에서만 접근하도록 Proxmox 방화벽으로 제한한다. `X-Forwarded-For`는 신뢰 프록시일 때만 인정.
 3. **게이트웨이 ↔ 공급자**: 실제 키는 Vault에만 존재. 사용자는 키를 보지 못한다.
 4. **공격자 ↔ 공급자**: 게이트웨이를 통과하지 않는 경로. 이 경로가 사용량 대조의 탐지 대상이다.
 
@@ -175,19 +175,20 @@ sequenceDiagram
 |---|---|---|---|---|
 | 1 | 사용자/청중 → NPM(`hack.sio2.kr`) | HTTPS (TLS, Let's Encrypt `*.sio2.kr`, HTTP/2, SSL 강제) | 사용자: Bearer API 토큰(서버는 SHA-256 해시만 보관) 또는 OIDC JWT(RS256) / 청중: 유출 키 + IP당 호출 속도 제한 | 허용 IP 대역은 선택(미설정 시 모두 허용) |
 | 2 | 관리자 → NPM → `/admin/*`·`/demo/*` | HTTPS | `X-Admin-Key` 헤더(상수시간 비교), 공개 모드에서 `/docs` 비활성 | 데모 서버는 고정 키(약함) — 운영은 SSO·역할 기반 |
-| 3 | NPM → 게이트웨이 | Tailscale(WireGuard 암호화 터널) 위의 HTTP | 신뢰 프록시 IP에서 온 `X-Forwarded-For`만 인정 | 같은 망 밖에서는 접근 불가 |
+| 3 | NPM → 게이트웨이(Proxmox CT) | 같은 사설 LAN(Proxmox 브리지)의 HTTP — 공개 인터넷에 노출되지 않음 | 신뢰 프록시 IP에서 온 `X-Forwarded-For`만 인정, CT 방화벽은 NPM만 허용 | 운영에서는 내부 TLS(mTLS) 권장 |
 | 4 | 게이트웨이 → AI 공급자(OpenAI·OpenRouter) | HTTPS (TLS 1.2+, 시스템 CA 검증) | 공급자 API 키(Bearer). WIF 크레덴셜은 STS 15분 단기 토큰 | 키는 Vault에서 복호화해 요청마다 사용 |
 | 5 | 탐지 워커 → 공급자 사용량·폐기 API | HTTPS | 별도 관리 키(OpenRouter Management, OpenAI Admin) — 환경변수로만 보관 | 최소 권한 키 권장 |
 | 6 | 사용자 서비스 → IdP → 게이트웨이(WIF) | HTTPS(JWKS 조회) | JWT 서명(RS256만 허용, alg 화이트리스트), `exp`·`aud`·`iss` 검증, 신뢰 규칙(`sub` 패턴) | PoC는 로컬 가짜 IdP(HTTP) |
 | 7 | 게이트웨이 → 저장소(SQLite, 같은 호스트) | 로컬 파일(네트워크 없음) | 공급자 키는 Fernet(AES-128-CBC + HMAC-SHA256)으로 암호화 저장, 토큰은 해시, 응답엔 마스킹만 | 암호화 키는 환경변수(운영: KMS) |
 | 8 | 공격자 → 공급자(우회 경로) | HTTPS | 유출된 키 | 게이트웨이를 거치지 않으므로 **사용량 대조로 탐지** |
 
-- 요약: **바깥(인터넷) 구간은 모두 TLS, 내부 구간은 WireGuard 터널**, 애플리케이션 계층 인증은 구간마다 토큰·키·JWT로 나뉜다.
-- 한계: 터널 안의 NPM→게이트웨이는 평문 HTTP(WireGuard가 감싼다). 데모용 IdP·STS는 HTTP. 운영에서는 mTLS와 KMS를 적용한다.
+- 요약: **바깥(인터넷) 구간은 모두 TLS(NPM에서 종료), 내부 구간은 Proxmox 사설 LAN**, 애플리케이션 계층 인증은 구간마다 토큰·키·JWT로 나뉜다.
+- 한계: 사설 LAN 안의 NPM→게이트웨이는 평문 HTTP다. 데모용 IdP·STS는 HTTP. 운영에서는 mTLS와 KMS를 적용한다.
 
 ## 6. 배포 구조
 - **로컬 개발**: Mock 9000 + 게이트웨이 8000, SQLite 파일, `scripts/dev.ps1`.
-- **테스트 서버(`hack.sio2.kr`)**: 이 PC에서 게이트웨이 8800·Mock 9800을 Tailscale IP로 바인드 → Nginx Proxy Manager(Tailscale 노드)가 `hack.sio2.kr`를 이 PC로 프록시하고 `/live`만 9800으로 라우팅. 인증서는 `*.sio2.kr`.
+- **목표 구성(아키텍처 결정)**: **Nginx Proxy Manager(NPM)가 게이트웨이의 단일 진입점**이다. NPM이 TLS(`*.sio2.kr` 와일드카드)를 종료하고 `hack.sio2.kr`를 **Proxmox 위의 게이트웨이 서버(LXC CT)**로 프록시하며, `/live`만 같은 CT의 Mock(9000 계열 포트)으로 라우팅한다. CT 안에서는 게이트웨이(8000)·Mock·SQLite를 systemd로 구동하고, CT 방화벽은 NPM의 접근만 허용한다. 배포는 `pve-deploy` 절차(CT 생성 → 앱 배포 → NPM 프록시 + 인증서)를 따른다.
+- **현재 데모 구동(임시)**: 위 목표 구성으로 옮기기 전까지는 이 PC에서 게이트웨이 8800·Mock 9800을 Tailscale IP로 바인드하고 NPM이 Tailscale 경로로 프록시한다(NPM 쪽 Tailscale 키 만료에 영향받는 임시 방식).
 - 환경변수: `PUBLIC_MODE`, `ADMIN_KEY`, `TRUSTED_PROXIES`, `DEMO_MODE`(기본 1, 로컬 IdP·`X-Demo-Source-IP`), `MOCK_BASE_URL`, `DB_PATH`, `VAULT_KEY`, `LEAKED_KEY`, `IDP_ISSUER`, `UPSTREAM_API_KEY`·`UPSTREAM_BASE_URL`(Mock 실제 AI 패스스루), `LIVE_MODEL`, `OPENROUTER_MANAGEMENT_KEY`, `OPENAI_ADMIN_KEY`·`OPENAI_PROJECT_ID`. 테스트 서버는 실제 키 3종(`UPSTREAM_API_KEY`·`OPENROUTER_MANAGEMENT_KEY`·`OPENAI_ADMIN_KEY`)을 지운 채 실행한다(Mock만).
 
 ## 7. 그림 작성 가이드
@@ -195,7 +196,7 @@ sequenceDiagram
 - **화살표 색 구분 권장**: 정상 호출(실선), 탐지 조회(파선), 공격 경로(빨강), 자동 폐기(굵은 선).
 - **강조할 것**: ① 공격자 경로가 게이트웨이를 우회한다 ② 탐지 워커가 공급자 값과 게이트웨이 기록을 **서로 다른 경로로** 얻어 비교한다 ③ 폐기·승격 후에도 사용자 경로는 끊기지 않는다.
 
-- **구간 라벨**: 화살표마다 5-1절의 프로토콜(HTTPS/TLS, WireGuard, Bearer, JWT 등)을 짧게 표기한다.
+- **구간 라벨**: 화살표마다 5-1절의 프로토콜(HTTPS/TLS, 사설 LAN HTTP, Bearer, JWT 등)을 짧게 표기한다.
 - **그림에 넣지 않을 것**: vLLM(자체 GPU) 구성(2-6절)은 해커톤 시연 전용이라 컴포넌트도·시퀀스도·배포도에 그리지 않는다.
 
 ## 8. 한계와 운영 전환
