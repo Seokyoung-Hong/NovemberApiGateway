@@ -71,3 +71,4 @@
 | architecture.md | 개인 사용자(사람) 대상 WIF가 아키텍처에 없었음 | 행위자 U6·IdP 확장, G3 설명, 다이어그램(U6 SSO 로그인·토큰 호출), 4-3-1 개인 사용자 WIF 시퀀스, 5절 신뢰 경계 3-2, 5-1절 12행, 8절 전환 표, 그림 가이드 갱신. PoC는 서비스 단위 `sub` 매핑까지임을 명시 |
 | architecture.md | 다이어그램·표에 실제 기술명이 부족함 | 다이어그램 노드에 FastAPI·Uvicorn·httpx·cryptography·SQLite·Nginx Proxy Manager·Proxmox VE(LXC·systemd)·Let's Encrypt·AWS KMS/Vault·OpenAI/OpenRouter·Google/Entra/GitHub OIDC 등 기술명 병기, 2-7절 "기술 스택 한눈에" 표 추가 |
 | tech-stack-logos.md(신규) | 아키텍처 그림용 로고 출처 정리 없음 | 기술 약 34개의 로고 공식 출처 URL·형식·사용 조건·확인 여부 표와 컴포넌트-기술 대응표 작성(이미지 미포함). architecture.md 2-7절에서 링크 |
+| tech-stack-logos.md, architecture.md | 일부 로고(Let's Encrypt CC BY-NC, WireGuard 허락, Proxmox 조건)의 사용 가능 여부가 불명확 | 비상업 해커톤 발표용이라 전부 사용하기로 한 결정을 0절에 기록(표기 의무·변형 금지·오인 금지는 유지, 상업 전환 시 재검토) |
