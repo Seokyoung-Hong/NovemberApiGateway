@@ -11,9 +11,11 @@ import os
 import secrets
 from datetime import datetime
 
+import httpx
+
 from app.contract import (COST_PER_TOKEN_KRW, MOCK_BASE_URL, OPENAI_BASE_URL, OPENAI_MODEL, OPENAI_PROJECT_ID,
                           OPENAI_REVOKE_LAG_S, OPENROUTER_BASE_URL, OPENROUTER_MODEL, OPENROUTER_REVOKE_LAG_S,
-                          USAGE_LAG_S, USD_TO_KRW)
+                          USAGE_LAG_S, USD_TO_KRW, VLLM_ADMIN_KEY, VLLM_BASE_URL, VLLM_MODEL)
 
 OUR_PREFIX = "november-"  # 이 접두어로 시작하는 키·서비스 계정만 만들고·고치고·지운다
 
@@ -165,7 +167,45 @@ class OpenAI:
         return n
 
 
-ADAPTERS = {a.name: a for a in (Mock(), OpenRouter(), OpenAI())}
+class Vllm(Mock):
+    """자체 GPU. 앞단 게이트웨이가 Mock과 같은 /usage·/revoke·/demo/reset 제공(docs/vllm-gateway-spec.md).
+    키는 처음 보는 값도 유효하므로 provision = 로컬 생성. call_cost_usd는 Mock 공식 상속."""
+    name, model, revoke_lag_s = "vllm", VLLM_MODEL, 0.5
+    lag_s = USAGE_LAG_S["vllm"]
+    chat_url = f"{VLLM_BASE_URL}/v1/chat/completions"
+
+    def _h(self):
+        return {"X-Admin-Key": VLLM_ADMIN_KEY} if VLLM_ADMIN_KEY else {}
+
+    async def fetch_usage(self, http, cred):
+        r = await http.get(f"{VLLM_BASE_URL}/usage", params={"owner": cred["provider_ref"]}, headers=self._h())
+        r.raise_for_status()
+        u = r.json()
+        return {"requests": u.get("requests", 0), "tokens": u.get("tokens", 0),
+                "cost_usd": float(u.get("cost_krw") or 0) / USD_TO_KRW}
+
+    async def revoke(self, http, cred):
+        r = await http.post(f"{VLLM_BASE_URL}/revoke", json={"owner": cred["provider_ref"]}, headers=self._h())
+        return r.status_code == 200
+
+    def prepare(self, body):
+        m = str(body.get("model") or "")
+        out = {**body, "model": m if m and not m.startswith(("mock", "demo")) else self.model}
+        return out | ({"stream_options": {"include_usage": True}} if body.get("stream") else {})
+
+    async def provision(self, http, role, name=None, limit_usd=None):
+        raw = f"sk-vllm-{'K1' if role == 'PRIMARY' else 'S1'}-{secrets.token_hex(4)}"
+        return raw, raw
+
+    async def cleanup(self, http):  # 폐기할 외부 키 없음. 공급자 계량·폐기 목록 초기화(404·연결 실패 무시)
+        try:
+            await http.post(f"{VLLM_BASE_URL}/demo/reset", headers=self._h())
+        except httpx.HTTPError:
+            pass
+        return 0
+
+
+ADAPTERS = {a.name: a for a in (Mock(), OpenRouter(), OpenAI(), Vllm())}
 
 
 def get(provider: str):

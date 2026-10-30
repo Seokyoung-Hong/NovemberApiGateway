@@ -48,7 +48,7 @@
 ## 코드 확인 필요
 (문서와 다르거나 동작이 의심스러운 코드. 고치지 않았다.)
 1. `app/detector/router.py:38-40` 관리자 키 오류가 `bad admin key`, `app/gateway/router.py:195-197`은 `invalid_admin_key`. 대시보드 계열만 문구가 다르다. `gateway.router._admin` 하나로 통일 권장.
-2. `app/detector/router.py:392-403` 공격 시뮬레이터가 공급자와 무관하게 항상 Mock으로 호출한다. OpenRouter/OpenAI 모드에서 누르면 공급자 사용량이 늘지 않아 탐지되지 않는다(Mock은 처음 보는 키도 받음).
+2. (해소: 공격 시뮬레이터가 PRIMARY 공급자로 대상 선택, openrouter·openai는 409. contract M절) `app/detector/router.py:392-403` 공격 시뮬레이터가 공급자와 무관하게 항상 Mock으로 호출한다. OpenRouter/OpenAI 모드에서 누르면 공급자 사용량이 늘지 않아 탐지되지 않는다(Mock은 처음 보는 키도 받음).
 3. `app/detector/router.py:412-461` `/demo/attack/*`·`/demo/reset*`가 `DEMO_MODE`와 무관하게 등록된다. feature-spec F12의 원래 의도("DEMO_MODE=1일 때만")와 다르다. 공개 모드에선 관리자 키로 보호되지만, `DEMO_MODE=0`인 비공개 실행에서는 누구나 리셋할 수 있다.
 4. `app/detector/router.py:350-354` 사고·대시보드의 `calls_estimated`가 `provider == "openrouter"`로 하드코딩돼 있다. 새 비용 전용 공급자가 생기면 틀린다(어댑터 속성 또는 `assess` 결과 사용 권장).
 5. `app/db.py:37` `access_denied_log.reason` 주석이 3종만 적혀 있다(`ip_blocked`·`wif_*` 누락). 주석만의 문제.
@@ -58,3 +58,4 @@
 
 - 2026-10-31 용어 통일: 관리자 키 `demo-admin`→`admin`(데모 고정값, 약한 키 경고 추가), "직원/employee"→"사용자/user"(시드 서비스 `직원A`·`직원B`→`userA`·`userB`).
 - 2026-10-31 IP 정책: 허용 CIDR 0개면 `/v1` 모두 허용(기존: 전부 거부), `/demo/reset`의 CIDR 4개 시드 제거, `POST /admin/cidrs`에 `*` 허용, 대시보드 `ip_policy`(`open`|`restricted`) 추가.
+- 2026-10-31 vLLM 공급자: `vllm` 어댑터·`/demo/reset-vllm`·공격 시뮬레이터 공급자별 대상(openrouter·openai 409)·`/live/chat` `sk-vllm-` 직접 전달 추가. contract M절, architecture P4, demo-scenario·frontend-handoff 표 갱신.

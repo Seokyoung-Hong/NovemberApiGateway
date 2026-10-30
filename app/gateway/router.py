@@ -228,8 +228,10 @@ def list_credentials():
 def create_credential(b: CredIn):
     if b.provider not in PROVIDERS or b.role not in ("PRIMARY", "STANDBY"):
         raise HTTPException(400, "invalid provider/role")
-    if b.provider != "mock":
+    if b.provider not in ("mock", "vllm"):
         raise HTTPException(400, f"{b.provider}는 POST /admin/{b.provider}/provision 사용")
+    if b.provider == "vllm" and not (b.auth_mode == "API_KEY" and b.secret):
+        raise HTTPException(400, "vllm은 API_KEY + secret 필요")
     if b.auth_mode == "API_KEY" and b.secret:
         enc, masked, ref = vault.encrypt(b.secret), mask_key(b.secret), b.secret
     elif b.auth_mode == "WIF" and b.audience:
@@ -259,7 +261,7 @@ def insert_provider_cred(c, provider: str, role: str, raw: str, ref: str) -> dic
     cid = c.execute("INSERT INTO credential(provider,auth_mode,role,secret_enc,masked,provider_ref,created_at)"
                     " VALUES(?,'API_KEY',?,?,?,?,?)",
                     (provider, role, vault.encrypt(raw), mask_key(raw), ref, now_iso())).lastrowid
-    if role == "PRIMARY" and provider == "openrouter":  # 라이브 페이지(/live)는 OpenRouter 키만 지원
+    if role == "PRIMARY" and provider in ("openrouter", "vllm"):  # 라이브 페이지(/live)가 이 키를 공개
         with open(LIVE_KEY_PATH, "w", encoding="utf-8") as f:  # data/ 는 gitignore
             json.dump({"key": raw}, f)
     return {"id": cid, "masked": mask_key(raw), "role": role, "hash_masked": mask_key(ref.split("|")[0])}

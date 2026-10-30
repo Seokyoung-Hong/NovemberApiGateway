@@ -16,7 +16,12 @@ MOCK_PORT = 9000
 MOCK_BASE_URL = os.getenv("MOCK_BASE_URL", "http://127.0.0.1:9000")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
-PROVIDERS = {"mock": MOCK_BASE_URL, "openrouter": OPENROUTER_BASE_URL, "openai": OPENAI_BASE_URL}  # 공급자 이름 -> base_url
+# M. vLLM(자체 GPU): 앞단 게이트웨이가 키별 계량·폐기 제공(docs/vllm-gateway-spec.md)
+VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://127.0.0.1:8100").rstrip("/")
+VLLM_ADMIN_KEY = os.getenv("VLLM_ADMIN_KEY", "")
+VLLM_MODEL = os.getenv("VLLM_MODEL", "google/gemma-4-E4B-it-qat-w4a16-ct")
+PROVIDERS = {"mock": MOCK_BASE_URL, "openrouter": OPENROUTER_BASE_URL, "openai": OPENAI_BASE_URL,
+             "vllm": VLLM_BASE_URL}  # 공급자 이름 -> base_url
 ADMIN_KEY = os.getenv("ADMIN_KEY", "admin")  # X-Admin-Key (/admin/*, 공개 모드면 /demo/*·/idp/token도)
 PUBLIC_MODE = os.getenv("PUBLIC_MODE", "0") == "1"  # 인터넷 공개용(K절)
 TRUSTED_PROXIES = {p.strip() for p in os.getenv("TRUSTED_PROXIES", "").split(",") if p.strip()}  # XFF를 믿을 직접 접속 IP
@@ -34,6 +39,7 @@ MOCK_USAGE_LAG_S = 2  # Mock 집계 지연
 LEAKED_KEY = os.getenv("LEAKED_KEY", "sk-mock-K1-leaked-demo")  # 시드 K1의 키 값(청중에게 '유출'로 공개되는 값)
 ATTACK_RPS = 5
 ATTACK_MAX_TOKENS = 2000  # 건당 800원
+ATTACK_MAX_TOKENS_VLLM = 30  # GPU 부하를 줄이기 위해 작게
 WIF_TOKEN_TTL_S = 900
 
 # G. OpenRouter 라이브 모드
@@ -52,8 +58,9 @@ OPENAI_USAGE_LAG_S = 420
 OPENAI_REVOKE_LAG_S = 3
 OPENAI_MODEL = "gpt-4o-mini"
 OPENAI_PROJECT_ID = os.getenv("OPENAI_PROJECT_ID", "proj_xkSCJaCHHKA3GEm5bEm02pHJ")
-USAGE_LAG_S = {"mock": MOCK_USAGE_LAG_S, "openrouter": OPENROUTER_USAGE_LAG_S, "openai": OPENAI_USAGE_LAG_S}
-RATIOS = {"mock": (SUSPECT_RATIO, WARN_RATIO, BLOCK_RATIO),  # 실제 공급자는 지연이 커서 낮춤
+USAGE_LAG_S = {"mock": MOCK_USAGE_LAG_S, "openrouter": OPENROUTER_USAGE_LAG_S, "openai": OPENAI_USAGE_LAG_S,
+               "vllm": float(os.getenv("USAGE_LAG_S_VLLM", "2"))}
+RATIOS = {"mock": (SUSPECT_RATIO, WARN_RATIO, BLOCK_RATIO), "vllm": (SUSPECT_RATIO, WARN_RATIO, BLOCK_RATIO),  # 실제 공급자는 지연이 커서 낮춤
           "openrouter": (0.05, 0.2, 0.35), "openai": (0.05, 0.2, 0.35)}
 LIVE_KEY_PATH = os.path.join(os.path.dirname(DB_PATH) or ".", "live_key.json")  # 프로비저닝한 유출 키(OpenRouter 모드)
 

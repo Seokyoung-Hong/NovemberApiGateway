@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.clientip import client_ip, public_guard
 from app.contract import (PUBLIC_MODE, LEAKED_KEY, LIVE_KEY_PATH, MOCK_USAGE_LAG_S, OPENROUTER_BASE_URL, OPENROUTER_MODEL,
-                          WIF_TOKEN_TTL_S, cost_krw)  # contract import 시 .env 로드
+                          VLLM_BASE_URL, VLLM_MODEL, WIF_TOKEN_TTL_S, cost_krw)  # contract import 시 .env 로드
 
 app = FastAPI(**({"docs_url": None, "redoc_url": None, "openapi_url": None} if PUBLIC_MODE else {}))
 app.middleware("http")(public_guard)  # 공개 모드면 Mock /demo/reset도 관리자 키 필요
@@ -23,7 +23,9 @@ revoked: set[str] = set()
 sts: dict[str, tuple[str, float]] = {}  # 토큰 -> (owner, 만료 epoch)
 live_hits: dict[str, list[float]] = {}  # IP -> 최근 /live/chat 시각
 live_calls = 0
-live_or_status = None  # OpenRouter 모드: 마지막 OpenRouter 응답 코드(401/403이면 key_status=revoked)
+live_or_status = None  # OpenRouter·vLLM 모드: 마지막 공급자 응답 코드(401/403이면 key_status=revoked)
+DIRECT = {"sk-or-": (f"{OPENROUTER_BASE_URL}/chat/completions", None),  # 키 접두 -> (공급자 URL, 모델 None=LIVE_MODEL)
+          "sk-vllm-": (f"{VLLM_BASE_URL}/v1/chat/completions", VLLM_MODEL)}
 
 
 def _reset():
@@ -169,15 +171,15 @@ def live_config():
     return {"key": _live_key(), "model": LIVE_MODEL}
 
 
-async def _live_openrouter(key: str, msg: str):
-    """청중 호출을 OpenRouter에 직접 전달(게이트웨이를 거치지 않음 = 유출 키 직접 사용)."""
+async def _live_direct(key: str, msg: str, url: str, model: str):
+    """청중 호출을 공급자(OpenRouter·vLLM)에 직접 전달(게이트웨이를 거치지 않음 = 유출 키 직접 사용)."""
     global live_calls, live_or_status
     if key != _live_key():  # 열린 프록시가 되지 않게 지금 공개한 키만 허용
         return _revoked()
     try:
         async with httpx.AsyncClient(timeout=20) as c:
-            r = await c.post(f"{OPENROUTER_BASE_URL}/chat/completions", headers={"Authorization": f"Bearer {key}"},
-                             json={"model": LIVE_MODEL, "max_tokens": 150, "messages": [{"role": "user", "content": msg}]})
+            r = await c.post(url, headers={"Authorization": f"Bearer {key}"},
+                             json={"model": model, "max_tokens": 150, "messages": [{"role": "user", "content": msg}]})
     except httpx.HTTPError:
         return JSONResponse({"error": "upstream_error"}, status_code=502)
     live_or_status = r.status_code
@@ -201,8 +203,9 @@ async def live_chat(request: Request):
     hits.append(now)
     body = await request.json()
     key, msg = str(body.get("key", "")).strip(), str(body.get("message", ""))[:300]
-    if key.startswith("sk-or-"):
-        return await _live_openrouter(key, msg)
+    for prefix, (url, model) in DIRECT.items():
+        if key.startswith(prefix):
+            return await _live_direct(key, msg, url, model or LIVE_MODEL)
     owner = _owner(key)
     if owner is None:
         return _revoked()
@@ -214,7 +217,7 @@ async def live_chat(request: Request):
 
 def _live_revoked() -> bool:
     key = _live_key()
-    return live_or_status in (401, 403) if key.startswith("sk-or-") else key in revoked
+    return live_or_status in (401, 403) if key.startswith(tuple(DIRECT)) else key in revoked
 
 
 @app.get("/live/stats")

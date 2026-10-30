@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from app import providers, vault
 from app.clientip import admin_ok
-from app.contract import (ADMIN_KEY, ATTACK_MAX_TOKENS, ATTACK_RPS, CALL_COST_MAX_USD, CALL_COST_MIN_USD,
+from app.contract import (ADMIN_KEY, ATTACK_MAX_TOKENS, ATTACK_MAX_TOKENS_VLLM, ATTACK_RPS, CALL_COST_MAX_USD, CALL_COST_MIN_USD,
                           CALL_COST_RECENT_N, DEFAULT_CALL_COST_USD, DEFAULT_LIMIT_CALLS, HYSTERESIS_S, LEAKED_KEY,
                           LIVE_KEY_PATH, OPENROUTER_LIMIT_CALLS, POLL_INTERVAL_S, PROVIDERS, RATIOS, TOLERANCE_CALLS,
                           USD_TO_KRW, effective_calls_diff, effective_diff, hash_token, judge, mask_key)
@@ -391,18 +391,32 @@ def attack_running():
     return bool(t and not t.done())
 
 
-async def attack():
+def primary_cred():
     with get_conn() as c:
-        cred = c.execute("SELECT * FROM credential WHERE role='PRIMARY' AND status='ACTIVE' ORDER BY id LIMIT 1").fetchone()
+        return c.execute("SELECT * FROM credential WHERE role='PRIMARY' AND status='ACTIVE' ORDER BY id LIMIT 1").fetchone()
+
+
+# 공격 시뮬레이터 대상 공급자 -> (표시 이름, model(None=어댑터 기본), max_tokens). 그 밖(실제 과금)은 409
+ATTACK_TARGETS = {"mock": ("Mock", "mock", ATTACK_MAX_TOKENS), "vllm": ("vLLM", None, ATTACK_MAX_TOKENS_VLLM)}
+
+
+async def attack():
+    cred = primary_cred()
     reason = "PRIMARY 키 없음"
     if cred:
-        async with httpx.AsyncClient(timeout=5) as http:
+        ad = providers.get(cred["provider"])
+        _, model, max_tokens = ATTACK_TARGETS[ad.name]
+        async with httpx.AsyncClient(timeout=10) as http:
             key = await bearer(http, cred)
             while True:
                 t0 = time.time()
-                r = await http.post(f"{MOCK}/v1/chat/completions", headers={"Authorization": f"Bearer {key}"},
-                                    json={"model": "mock", "messages": [{"role": "user", "content": "x"}],
-                                          "max_tokens": ATTACK_MAX_TOKENS})
+                try:
+                    r = await http.post(ad.chat_url, headers={"Authorization": f"Bearer {key}"},
+                                        json={"model": model or ad.model, "messages": [{"role": "user", "content": "x"}],
+                                              "max_tokens": max_tokens})
+                except httpx.HTTPError:  # GPU 지연·일시 오류로 공격이 죽지 않게
+                    await asyncio.sleep(1 / ATTACK_RPS)
+                    continue
                 if r.status_code == 401:
                     reason = f"{cred['masked']} 401(폐기됨)"
                     break
@@ -413,9 +427,13 @@ async def attack():
 
 @router.post("/demo/attack/start")
 async def attack_start():
+    cred = primary_cred()
+    if cred and cred["provider"] not in ATTACK_TARGETS:  # 실제 과금 공급자(openrouter·openai)
+        raise HTTPException(409, "이 공급자는 공격 시뮬레이터 대상 아님. /live 청중 호출로 시연하세요")
     if not attack_running():
+        name = ATTACK_TARGETS[cred["provider"]][0] if cred else "Mock"
         with get_conn() as c:
-            event(c, "ATTACK_STARTED", f"유출 키로 Mock 직접 호출 시작 ({ATTACK_RPS}건/초)")
+            event(c, "ATTACK_STARTED", f"유출 키로 {name} 직접 호출 시작 ({ATTACK_RPS}건/초)")
         state["attack"] = asyncio.create_task(attack())
         await asyncio.sleep(0)
     return {"attack_running": attack_running()}
@@ -448,8 +466,8 @@ async def demo_reset():
 
 @router.post("/demo/reset-{provider}")
 async def demo_reset_provider(provider: str):
-    """reset과 같되 크레덴셜은 실제 공급자(openrouter|openai) 키 2개(K1 PRIMARY, S1 STANDBY)를 새로 만들어 시드."""
-    if provider not in ("openrouter", "openai"):
+    """reset과 같되 크레덴셜은 실제 공급자(openrouter|openai|vllm) 키 2개(K1 PRIMARY, S1 STANDBY)를 새로 만들어 시드."""
+    if provider not in ("openrouter", "openai", "vllm"):
         raise HTTPException(404, "unknown provider")
     return await _reset(provider)
 
@@ -480,7 +498,7 @@ async def _reset(provider: str):
                 await ad.cleanup(http)
                 for role in ("PRIMARY", "STANDBY"):
                     keys.append((role, *await ad.provision(http, role, None, 0.5)))
-        if provider != "openrouter":
+        if provider not in ("openrouter", "vllm"):
             try:
                 os.remove(LIVE_KEY_PATH)  # 라이브 페이지를 Mock 유출 키(LEAKED_KEY)로 되돌린다
             except FileNotFoundError:

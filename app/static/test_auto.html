@@ -16,6 +16,7 @@ Admin Key <input id="akey" size="30" type="password">
 <p>
 <label><input type="checkbox" id="o_attack" checked> 공격 시나리오 포함(15)</label>
 <label><input type="checkbox" id="o_or"> OpenRouter 항목(17~18)</label>
+<label><input type="checkbox" id="o_vllm"> vLLM 공급자(옵션, 기본 끔)(19, DB를 vLLM 시드로 초기화)</label>
 </p>
 <button id="runall" onclick="runAll()">전체 실행</button>
 <span id="prog"></span>
@@ -236,6 +237,10 @@ var items = [
 { n: 18, name: "OpenRouter cleanup", expect: "응답 코드 표시(SKIP 허용)", opt: "o_or", fn: async function () {
   var r = await api("/demo/cleanup-openrouter", "POST");
   if (r.status === 200) return "200 " + r.text.slice(0, 80);
+  skip("HTTP " + r.status + " " + (r.text || "").slice(0, 80)); } },
+{ n: 19, name: "vLLM 공급자 연결", expect: "응답 코드 표시(404·실패는 SKIP)", opt: "o_vllm", fn: async function () {
+  var r = await api("/demo/reset-vllm", "POST");
+  if (r.status === 200) return "200 leaked_key=" + String(r.json && r.json.leaked_key || "").slice(0, 16) + "...";
   skip("HTTP " + r.status + " " + (r.text || "").slice(0, 80)); } }
 ];
 

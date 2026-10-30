@@ -75,6 +75,7 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
   | Mock (테스트 서버 기본) | 2초 | 즉시 | 위 실측대로 빠르게 전이 |
   | OpenRouter | 사용액 약 6초(+8초 정렬) | 최대 약 20초 | BLOCKED 이후에도 청중 화면은 최대 20초간 200이 올 수 있다 → 페이지 A는 BLOCKED가 아니라 401/`key_status`에 맞춰 알림. 호출 수는 추정치 |
   | OpenAI | 95~381초(실측 편차) | 약 3초 | 라이브 시연용 아님. `/live` 미지원 |
+  | vLLM(자체 GPU) | 0~2초 | 즉시 | Mock과 같은 속도로 전이(스텁 실측 약 18초에 RECOVERED). `/live` 지원(`sk-vllm-` 키) |
 
 ## 5. 에러 코드표
 | HTTP | 본문 | 발생 | 화면 처리 제안(의미) |
@@ -89,8 +90,9 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 | 403 | `{"error":"service_suspended"}` | 정지된 서비스의 토큰 | 서비스 정지됨 |
 | 404 | `{"detail":"not found"}` 등 | 없는 사고 id·리소스, `DEMO_MODE=0`이면 `/idp/*`·`/demo/wif/*` | — |
 | 409 | `{"detail":"honeykey 없음. /demo/reset 먼저"}` | 리셋 전 `/demo/honeypot/hit` | 리셋 먼저 |
+| 409 | `{"detail":"이 공급자는 공격 시뮬레이터 대상 아님. /live 청중 호출로 시연하세요"}` | PRIMARY가 OpenRouter·OpenAI일 때 `/demo/attack/start` | 공격 버튼 비활성, 청중 호출 안내 |
 | 429 | `{"error":"rate_limited"}` | `/live/chat` 출발 IP당 20초 10회 초과 | "잠시 후 다시 시도하세요"(차단과 구분) |
-| 502 | `{"error":"upstream_error"}` (+`upstream_status`) | `/v1` 공급자 401·네트워크 오류, `/live/chat` OpenRouter 오류 | 연결 실패, 재시도 |
+| 502 | `{"error":"upstream_error"}` (+`upstream_status`) | `/v1` 공급자 401·네트워크 오류, `/live/chat` OpenRouter·vLLM 오류 | 연결 실패, 재시도 |
 | 503 | `{"error":"no_active_credential"}` | `/v1` 활성 PRIMARY 키 없음 | 서비스 불가 |
 | 400 | `{"detail":"..."}` | 관리자 입력 검증 실패 | 메시지 표시 |
 

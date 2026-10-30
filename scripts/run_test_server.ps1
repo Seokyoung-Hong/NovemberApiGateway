@@ -29,6 +29,7 @@ $env:PUBLIC_MODE = "1"; $env:DEMO_MODE = "1"
 $env:ADMIN_KEY = "admin"
 $env:TRUSTED_PROXIES = "100.69.18.101"  # NPM
 $env:MOCK_BASE_URL = "http://${ts}:9800"
+if (-not $env:VLLM_BASE_URL) { $env:VLLM_BASE_URL = "http://${ts}:8100" }  # 이 PC의 vLLM 게이트웨이(gpu_lb). 다른 주소면 VLLM_BASE_URL을 미리 설정
 $env:DB_PATH = "$Data\gateway.db"
 foreach ($k in "UPSTREAM_API_KEY", "OPENROUTER_MANAGEMENT_KEY", "OPENAI_ADMIN_KEY") { Remove-Item "env:$k" -ErrorAction SilentlyContinue }
 
