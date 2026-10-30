@@ -69,7 +69,7 @@
 | 신원 제공자 | **Google Workspace**, **Microsoft Entra ID**, **GitHub Actions OIDC** | 사람·워크로드 OIDC 토큰 발급 |
 | AI 공급자 | **OpenAI API**, **OpenRouter API** | 모델 호출, 키별 사용량·폐기 API |
 | 문서·도구 | **Mermaid**, Markdown, **Git/GitHub** | 다이어그램·문서·형상 관리 |
-- 로고 출처와 사용 조건은 `docs/tech-stack-logos.md`(조사 중)에 정리한다. 해커톤 데모 전용 구성(vLLM)은 이 표와 아키텍처 그림에서 제외한다.
+- 로고 출처 URL과 사용 조건은 `docs/tech-stack-logos.md`에 정리했다(이미지는 저장소에 넣지 않음). 약 34개 항목 중 14개는 공식 URL을 열어 확인했고, 나머지는 "부분" 또는 "확인 불가"이므로 그림에 쓰기 전에 디자이너가 공식 페이지에서 직접 확인한다. 로고가 없는 개념(OAuth, PKCE, Device Authorization Grant 등)은 텍스트 박스로 그린다. 해커톤 데모 전용 구성(vLLM)은 이 표와 아키텍처 그림에서 제외한다.
 
 ## 3. 컴포넌트 다이어그램 (Mermaid)
 ```mermaid
