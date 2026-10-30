@@ -14,7 +14,8 @@ from app.clientip import admin_ok
 from app.contract import (ADMIN_KEY, ATTACK_MAX_TOKENS, ATTACK_MAX_TOKENS_VLLM, ATTACK_RPS, CALL_COST_MAX_USD, CALL_COST_MIN_USD,
                           CALL_COST_RECENT_N, DEFAULT_CALL_COST_USD, DEFAULT_LIMIT_CALLS, HYSTERESIS_S, LEAKED_KEY,
                           LIVE_KEY_PATH, OPENROUTER_LIMIT_CALLS, POLL_INTERVAL_S, PROVIDERS, RATIOS, TOLERANCE_CALLS,
-                          USD_TO_KRW, effective_calls_diff, effective_diff, hash_token, judge, mask_key)
+                          USD_TO_KRW, DETECTION_DEFAULTS, DETECTION_MODES, effective_calls_diff, effective_diff,
+                          hash_token, judge, judge_th, mask_key, measure)
 from app.db import get_conn
 from app.gateway.router import _wif_cache, blocked_ips, insert_provider_cred, reset_gen
 
@@ -56,6 +57,27 @@ TOKENS_COL = "COALESCE(input_tokens,0)+COALESCE(output_tokens,0)"
 
 def ratios(provider):
     return RATIOS.get(provider, RATIOS["mock"])
+
+
+def detection(c, provider):
+    """지금 판정 기준. detection_mode 미설정이면 레거시(한도 하나 × 공급자별 비율, legacy=True)."""
+    rows = dict(c.execute("SELECT key,value FROM setting").fetchall())
+    mode = rows.get("detection_mode")
+    if mode not in DETECTION_MODES:
+        lim, r = limit_calls(c), ratios(provider)
+        return {"mode": "calls", "unit": "건", "suspect": lim * r[0], "warn": lim * r[1], "block": lim * r[2],
+                "legacy": True, "limit": lim}
+    th = [float(rows.get(k, DETECTION_DEFAULTS[k])) for k in DETECTION_MODES[mode]]
+    return {"mode": mode, "unit": "건" if mode == "calls" else "%", "suspect": th[0], "warn": th[1], "block": th[2],
+            "legacy": False}
+
+
+def det_value(det, diff, provider_calls):
+    return measure(det["mode"], diff, provider_calls)
+
+
+def block_label(det):
+    return f"{det['block']:g}건" if det["unit"] == "건" else f"공급자 보고의 {det['block']:g}%"
 
 
 def _gw(c, cid, col="COUNT(*)", until=None, before=None):
@@ -171,18 +193,22 @@ async def tick(http):
             snapshot(c, cred, u, a, now)
             state["view"][cred["id"]] = a
             # 안전 경로: 확실 유출 수가 정렬 비교보다 크면 그 값으로 판정(차단선을 넘으면 정렬값과 무관하게 즉시 BREACH)
-            diff, lim = max(a["diff_calls"], a["certain_diff_calls"]), limit_calls(c)
+            diff, det = max(a["diff_calls"], a["certain_diff_calls"]), detection(c, cred["provider"])
+            a["value"] = val = det_value(det, diff, a["provider_total_calls"])
             g, p = costs(c, cred["id"])
             krw = (effective_diff(p, g), limit_krw(c))  # 참고 표시용
             prev = state["judged"].get(cred["id"], ("NORMAL", None))[0]
-            v = settle(cred["id"], judge(diff, lim, ratios(cred["provider"])), now)
+            raw = (judge(diff, det["limit"], ratios(cred["provider"])) if det["legacy"]
+                   else judge_th(val, (det["suspect"], det["warn"], det["block"])))
+            v = settle(cred["id"], raw, now)
             est = "(추정)" if a["calls_estimated"] else ""
+            share = f"{diff / det['limit']:.0%}" if det["legacy"] else f"{val:.1f}{det['unit']}"
             if v in ("SUSPECT", "WARNING") and v != prev:
-                event(c, v, f"{cred['masked']} 설명되지 않는 호출 {diff}건{est} ({diff / lim:.0%}, 참고 {krw[0]:,.0f}원)",
+                event(c, v, f"{cred['masked']} 설명되지 않는 호출 {diff}건{est} ({share}, 참고 {krw[0]:,.0f}원)",
                       {"credential_id": cred["id"], "diff_calls": diff, "certain_diff_calls": a["certain_diff_calls"],
                        "diff_krw": krw[0]})
         if v == "BREACH":
-            await respond(http, cred, diff, lim, *krw)
+            await respond(http, cred, diff, det, val, *krw)
     await watch_revoked(http)
     state["updated_at"] = time.time()
 
@@ -254,16 +280,18 @@ async def block_live(http, cred):
         print("live block error:", repr(e)[:120])
 
 
-async def respond(http, cred, diff, lim, diff_krw, lim_krw):
+async def respond(http, cred, diff, det, val, diff_krw, lim_krw):
     """BREACH 자동 대응. 탐지·폐기 요청은 즉시(워커 락 안), 나머지는 백그라운드로 연출 지연. 크레덴셜당 incident 1개.
     폐기 요청 결과와 무관하게 DB 폐기·예비 키 승격은 즉시(사용자 연속성). 공급자 폐기 확인은 revoke_guard가 맡는다.
-    diff/lim = 호출 수(판정 기준), diff_krw/lim_krw = 참고 금액."""
+    diff = 호출 수, det/val = 판정 기준(detection())과 판정값, diff_krw/lim_krw = 참고 금액."""
     with get_conn() as c:
         if c.execute("SELECT 1 FROM incident WHERE credential_id=?", (cred["id"],)).fetchone():
             return
-        tl = [{"at": iso(time.time()), "step": "DETECTED", "ok": True,
+        lim, label = det.get("limit"), block_label(det)  # 새 방식은 limit_calls=NULL, 차단선은 DETECTED 단계에 보관
+        pct = "" if det["unit"] == "건" else f", 공급자 보고의 {val:.1f}%"
+        tl = [{"at": iso(time.time()), "step": "DETECTED", "ok": True, "block_label": label,
                "detail": f"설명되지 않는 호출 {diff}건{'(추정)' if state['view'].get(cred['id'], {}).get('calls_estimated') else ''}"
-                         f" ≥ 차단선 {lim * ratios(cred['provider'])[2]:g}건 (참고 {diff_krw:,.0f}원)"}]
+                         f"{pct} ≥ 차단선 {label} (참고 {diff_krw:,.0f}원)"}]
         iid = c.execute("INSERT INTO incident(credential_id,status,detected_at,loss_krw,limit_krw,loss_calls,limit_calls,"
                         "timeline) VALUES(?,?,?,?,?,?,?,?)", (cred["id"], "OPEN", time.time(), diff_krw, lim_krw, diff,
                                                               lim, json.dumps(tl))).lastrowid
@@ -284,7 +312,7 @@ async def respond(http, cred, diff, lim, diff_krw, lim_krw):
     state["revoke"][cred["id"]] = {"st": "PENDING", "cred": cred, "iid": iid, "tl": tl, "sb": sb, "sb_ok": False,
                                    "failed": False, "at": 0.0, "base": None, "checked": 0.0}
     spawn(final_loss(cred, iid))
-    spawn(recover(cred, iid, tl, diff, lim, sb))
+    spawn(recover(cred, iid, tl, diff, f"한도 {lim}건" if lim else f"차단선 {label}", sb))
     spawn(revoke_guard(cred["id"], ok))
 
 
@@ -339,7 +367,7 @@ async def revoke_guard(cid, req_ok=None):
             delay, req_ok = min(GUARD_MAX_S, delay * 2), None
 
 
-async def recover(cred, iid, tl, diff, lim, sb):
+async def recover(cred, iid, tl, diff, rule, sb):
     # 데모 연출: PROMOTE_STANDBY·NOTIFY_ADMIN 시각은 실제 처리(폐기 직후 DB 반영) 시각이 아니라 1초 간격 표시용.
     def step(name, detail, ok=True):
         tl.append({"at": iso(time.time()), "step": name, "detail": detail, "ok": ok})
@@ -355,7 +383,7 @@ async def recover(cred, iid, tl, diff, lim, sb):
     await asyncio.sleep(STEP_DELAY_S)
     step("NOTIFY_ADMIN", "관리자 통보(BLOCKED 이벤트)")
     with get_conn() as c:
-        event(c, "BLOCKED", f"{cred['masked']} 자동 차단. 설명되지 않는 호출 {diff}건 / 한도 {lim}건",
+        event(c, "BLOCKED", f"{cred['masked']} 자동 차단. 설명되지 않는 호출 {diff}건 / {rule}",
               {"incident_id": iid, "credential_id": cred["id"], "new_credential_id": sb["id"] if sb else None})
     save_tl(iid, tl)
     if not sb:
@@ -413,6 +441,7 @@ def dashboard():
                         | {"gateway_cost_krw": g, "provider_cost_krw": p, "diff_krw": d,
                            "diff_usd": max(0.0, p - g) / USD_TO_KRW,
                            "gateway_calls": gc, "provider_calls": pc, "diff_calls": dc, "certain_diff_calls": cc,
+                           "value": a.get("value", 0),
                            "calls_estimated": a.get("calls_estimated", cr["provider"] == "openrouter"),
                            "revocation": state["revoke"].get(cr["id"], {}).get("st")})
         inc = c.execute("SELECT * FROM incident WHERE trigger_type!='HONEYKEY' ORDER BY id DESC LIMIT 1").fetchone()
@@ -428,8 +457,17 @@ def dashboard():
         act = c.execute("SELECT id,provider,auth_mode,masked FROM credential "
                         "WHERE role='PRIMARY' AND status='ACTIVE' ORDER BY id LIMIT 1").fetchone()
         cidrs = [r["cidr"] for r in c.execute("SELECT cidr FROM allowed_cidr")]
+        det = detection(c, act["provider"] if act else "mock")
+    # 활성 키 중 판정값이 가장 큰 것(모두 0이면 주 키). 화면은 detection 하나로 막대·차단선·단위를 그린다
+    live = [r for r in rows if r["status"] == "ACTIVE"]
+    top = max(live, key=lambda r: r["value"], default=None)
+    if act and (not top or top["value"] == 0):
+        top = next((r for r in rows if r["id"] == act["id"]), top)
+    det |= {"value": top["value"] if top else 0,
+            "diff_calls": max(top["diff_calls"], top["certain_diff_calls"]) if top else 0,
+            "provider_calls": top["provider_calls"] if top else 0, "tolerance_calls": TOLERANCE_CALLS}
     _, warn_r, block_r = ratios(act["provider"] if act else "mock")
-    return {"status": status, "limit_krw": lim, "warn_at_krw": lim * warn_r, "block_at_krw": lim * block_r,
+    return {"status": status, "detection": det, "limit_krw": lim, "warn_at_krw": lim * warn_r, "block_at_krw": lim * block_r,
             "diff_krw": dt, "diff_usd": max(0.0, pt - gt) / USD_TO_KRW, "gateway_cost_krw": gt, "provider_cost_krw": pt,
             "limit_calls": lc, "warn_at_calls": lc * warn_r, "block_at_calls": lc * block_r,
             "diff_calls": dct, "certain_diff_calls": cct, "gateway_calls": gct, "provider_calls": pct,
@@ -470,6 +508,7 @@ def incident_json(c, r):
             "duration_s": round(r["blocked_at"] - r["detected_at"], 3) if r["blocked_at"] else None,
             "loss_krw": r["loss_krw"], "limit_krw": r["limit_krw"],
             "loss_calls": r["loss_calls"], "limit_calls": r["limit_calls"], "new_credential_id": r["new_credential_id"],
+            "block_label": (json.loads(r["timeline"]) or [{}])[0].get("block_label"),
             "new_credential_masked": m(r["new_credential_id"]), "timeline": json.loads(r["timeline"])}
 
 

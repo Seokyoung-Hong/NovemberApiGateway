@@ -190,6 +190,7 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 - 대시보드 대부분 값은 워커 2초 틱 기준이라 실시간보다 최대 2초(+공급자 지연) 늦다.
 - 관리자 키 오류 문구가 엔드포인트에 따라 두 가지(`invalid_admin_key`/`bad admin key`). 상태 코드 401로 처리할 것.
 - 관리자 인증은 고정 키 1개(SSO·역할 없음).
+- 판정 방식(사용량 %/건수): `/admin/settings`의 `detection_mode`가 없으면 레거시 서버로 그리면 된다. 저장 후에는 대시보드 `detection`, 사고 `block_label`을 쓴다(contract.md O절).
 
 ## 부록. 기능 테스트 페이지
 - `/test` — 수동 조작 콘솔(모든 API를 눌러 보고 상태 확인). `/test/auto` — 버튼 하나로 전체 기능을 점검하고 PASS/FAIL/SKIP 표를 보여 주는 자동 점검 페이지. 두 페이지 모두 디자인이 없는 QA용이며 Admin Key를 입력해야 한다(두 페이지가 같은 localStorage 키를 공유).

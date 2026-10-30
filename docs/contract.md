@@ -233,3 +233,11 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
 - **대시보드**: `credentials[].revocation` = `"PENDING"`(확인 중) | `"FAILED"`(확인 실패, 재시도 중) | `"CONFIRMED"` | null(폐기 대상 아님·리셋 후·서버 재시작 후). 기존 필드는 그대로.
 - 새 이벤트 kind: `REVOKE_FAILED`, `REVOKE_CONFIRMED`, `REVOKE_NOT_EFFECTIVE`. 새 timeline step: `REVOKE_VERIFIED`(여러 번 나올 수 있음, `REVOKE_PROVIDER_KEY`도 재폐기 시 다시 나옴).
 - 청중 페이지(`live.html`): `/live/stats`를 3초마다 보고 `key_status=="revoked"`이면(또는 `/live/chat` 401) 입력·전송을 잠그고 "🚫 차단되었습니다"를 표시. 잠금 중에는 전송 경로가 모두 막히며, `key_status`가 `active`로 돌아오면(리셋) `/live/config`를 다시 읽어 잠금을 푼다. 이전 답변 문구는 지우지 않는다.
+
+## O. 판정 방식(사용량 % / 건수) (2026-10-31)
+- 설정: `GET/PUT /admin/settings`(setting 테이블, 스키마 변경 없음). 필드 `detection_mode`(`usage_pct`|`calls`), `suspect_pct`·`warn_pct`·`block_pct`(기본 5·10·20, 0 초과 100 이하), `suspect_calls`·`warn_calls`·`block_calls`(기본 1·5·10, 양의 정수). 일부만 보내도 되고 저장값·기본값과 합쳐 두 방식 모두 의심 < 경고 < 차단을 검사한다. 잘못된 방식·0 이하·100 초과·순서 위반은 400, 소수 건수는 422.
+- 레거시 호환: `detection_mode`를 한 번도 저장하지 않았으면 GET 응답에 이 필드가 없고(프론트는 이것으로 레거시 서버로 판단), 판정은 기존 `unauthorized_call_limit` × 공급자별 RATIOS(`judge()`) 그대로. `/demo/reset*`는 setting을 지우므로 레거시로 돌아간다. 레거시로 되돌리는 PUT 값은 없다(리셋 사용).
+- 판정: 판정값 = `max(diff_calls, certain_diff_calls)`(허용 오차 3건 차감 후). `usage_pct`는 이를 공급자 보고 누적 호출 수로 나눈 %(0건이면 0%), `calls`는 건수 그대로. `judge_th`로 임계와 비교(0은 항상 NORMAL). 새 방식에서는 공급자별 비율을 쓰지 않는다. BREACH 대응(폐기·승격·사고·청중 차단·폐기 확인)은 동일.
+- 대시보드: 기존 필드 유지 + `detection` = {`mode`, `unit`(`%`|`건`), `suspect`, `warn`, `block`, `value`, `diff_calls`, `provider_calls`, `tolerance_calls`, `legacy`(+레거시면 `limit`)}. 활성 키 중 판정값이 가장 큰 키 기준(모두 0이면 주 키). `credentials[].value` = 키별 판정값.
+- 사고: `block_label`(예 `공급자 보고의 20%`, `10건`, 레거시 `70건`) 추가. 새 방식 사고는 `limit_calls`가 null(한도 대신 차단선), 레거시는 기존처럼 한도.
+- 키 발급 `POST /admin/{openrouter|openai|vllm}/provision` {role, name?, limit_usd?}: 이름은 `november-<name>`(프론트가 `이름-번호`를 보냄). mock은 발급 없음(404). 이름은 공급자 쪽에만 붙고 DB에는 저장하지 않는다.

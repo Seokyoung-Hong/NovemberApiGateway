@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from app import providers, vault
 from app.clientip import admin_ok, client_ip
-from app.contract import (DEFAULT_LIMIT_CALLS, DEFAULT_LIMIT_KRW, LIVE_KEY_PATH, PROVIDERS, USD_TO_KRW, hash_token,
+from app.contract import (DEFAULT_LIMIT_CALLS, DEFAULT_LIMIT_KRW, DETECTION_DEFAULTS, DETECTION_MODES, LIVE_KEY_PATH, PROVIDERS, USD_TO_KRW, hash_token,
                           mask_key)
 from app.db import get_conn
 
@@ -275,8 +275,8 @@ class ProvisionIn(BaseModel):
 
 @admin.post("/{provider}/provision")
 async def provision(provider: str, b: ProvisionIn):
-    """provider = openrouter | openai. 원문 키는 PRIMARY일 때만 leaked_key로 1회 반환."""
-    if provider not in ("openrouter", "openai"):
+    """provider = openrouter | openai | vllm. 원문 키는 PRIMARY일 때만 leaked_key로 1회 반환."""
+    if provider not in ("openrouter", "openai", "vllm"):
         raise HTTPException(404, "unknown provider")
     if b.role not in ("PRIMARY", "STANDBY") or b.limit_usd <= 0:
         raise HTTPException(400, "invalid role/limit_usd")
@@ -295,23 +295,47 @@ SETTING_DEFAULTS = {"unauthorized_call_limit": DEFAULT_LIMIT_CALLS, "loss_limit_
 
 @admin.get("/settings")
 def get_settings():
+    """detection_mode가 없으면 레거시(한도 하나). 프론트는 detection_mode 유무로 서버 지원을 감지한다."""
     with get_conn() as c:
         rows = dict(c.execute("SELECT key,value FROM setting").fetchall())
-    return {k: int(rows.get(k, d)) for k, d in SETTING_DEFAULTS.items()}
+    out = {k: int(rows.get(k, d)) for k, d in SETTING_DEFAULTS.items()}
+    if rows.get("detection_mode") in DETECTION_MODES:
+        num = lambda k: int(float(rows.get(k, DETECTION_DEFAULTS[k]))) if k.endswith("_calls") else float(rows.get(k, DETECTION_DEFAULTS[k]))
+        out |= {"detection_mode": rows["detection_mode"]} | {k: num(k) for k in DETECTION_DEFAULTS}
+    return out
 
 
 class SettingsIn(BaseModel):
     unauthorized_call_limit: Optional[int] = None
     loss_limit_krw: Optional[int] = None
+    detection_mode: Optional[str] = None  # usage_pct | calls
+    suspect_pct: Optional[float] = None
+    warn_pct: Optional[float] = None
+    block_pct: Optional[float] = None
+    suspect_calls: Optional[int] = None
+    warn_calls: Optional[int] = None
+    block_calls: Optional[int] = None
 
 
 @admin.put("/settings")
 def put_settings(b: SettingsIn):
     sent = b.model_dump(exclude_none=True)
+    mode = sent.pop("detection_mode", None)
+    if mode is not None and mode not in DETECTION_MODES:
+        raise HTTPException(400, "detection_mode must be usage_pct or calls")
     for k, v in sent.items():
         if v <= 0:
             raise HTTPException(400, f"{k} must be > 0")
+        if k.endswith("_pct") and v > 100:
+            raise HTTPException(400, f"{k} must be <= 100")
     with get_conn() as c:
+        rows = dict(c.execute("SELECT key,value FROM setting").fetchall())
+        merged = {k: float(sent.get(k, rows.get(k, d))) for k, d in DETECTION_DEFAULTS.items()}
+        for keys in DETECTION_MODES.values():
+            if not merged[keys[0]] < merged[keys[1]] < merged[keys[2]]:
+                raise HTTPException(400, f"의심 < 경고 < 차단 순서여야 해요 ({', '.join(keys)})")
+        if mode:
+            sent["detection_mode"] = mode
         c.executemany("INSERT OR REPLACE INTO setting(key,value) VALUES(?,?)", [(k, str(v)) for k, v in sent.items()])
     return get_settings()
 

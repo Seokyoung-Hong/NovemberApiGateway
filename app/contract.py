@@ -101,7 +101,33 @@ def judge(diff: float, limit: float, ratios=RATIOS["mock"]) -> str:
     return "NORMAL"
 
 
+# O. 판정 방식. detection_mode 미설정 = 레거시(한도 하나 × RATIOS). 설정 시 사용자가 정한 임계를 쓴다.
+DETECTION_MODES = {"usage_pct": ("suspect_pct", "warn_pct", "block_pct"), "calls": ("suspect_calls", "warn_calls", "block_calls")}
+DETECTION_DEFAULTS = {"suspect_pct": 5, "warn_pct": 10, "block_pct": 20, "suspect_calls": 1, "warn_calls": 5, "block_calls": 10}
+
+
+def measure(mode: str, diff: int, provider_calls: int) -> float:
+    """usage_pct: 공급자 보고 중 게이트웨이가 모르는 호출 비율(%), calls: 오차 차감 후 건수."""
+    if mode == "calls":
+        return diff
+    return diff / provider_calls * 100 if provider_calls > 0 else 0.0
+
+
+def judge_th(value: float, th) -> str:
+    """임계 (의심, 경고, 차단)과 비교. 0은 항상 NORMAL."""
+    if value >= th[2]:
+        return "BREACH"
+    if value >= th[1]:
+        return "WARNING"
+    if value > 0 and value >= th[0]:
+        return "SUSPECT"
+    return "NORMAL"
+
+
 if __name__ == "__main__":  # 최소 자체 검증
+    assert [judge_th(measure("usage_pct", d, 100), (5, 10, 20)) for d in (0, 5, 10, 20)] == ["NORMAL", "SUSPECT", "WARNING", "BREACH"]
+    assert [judge_th(measure("calls", d, 0), (1, 5, 10)) for d in (0, 1, 5, 10)] == ["NORMAL", "SUSPECT", "WARNING", "BREACH"]
+    assert measure("usage_pct", 3, 0) == 0
     assert cost_krw(2000) == 800
     assert effective_diff(4000, 0) == 0 and effective_diff(30_000, 5_000) == 20_000
     assert [judge(d, 100) for d in (0, 10, 50, 70)] == ["NORMAL", "SUSPECT", "WARNING", "BREACH"]
