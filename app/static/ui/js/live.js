@@ -1,4 +1,4 @@
-/* live.js — 청중 채팅 페이지 (docs/demo-page-spec.md 페이지 A)
+/* live.js — 공격자 채팅 페이지 (docs/demo-page-spec.md 페이지 A)
  * 유출된 키로 공급자(Mock /live/chat)에 직접 호출한다. 게이트웨이를 거치지 않는다.
  * 차단 감지 두 경로: ① 전송 응답 401 ② /live/stats 의 key_status=revoked (2초 폴링)
  * 상태 훅: body[data-state=active|busy|revoked|limited] (원본 live.html과 호환) */
@@ -95,7 +95,7 @@
     try {
       const s = await API.liveStats();
       const people = st.sim ? st.fakePeople : s.participants;
-      $('#stPeople').textContent = `참여 ${n(people)}명`;
+      $('#stPeople').textContent = `접속 ${n(people)}명`;
       $('#stCalls').textContent = `호출 ${n(st.sim ? s.calls + st.fakeCalls : s.calls)}건`;
       if (s.key_status === 'revoked' && !st.revoked) revoke(false);
       else if (s.key_status === 'active' && st.revoked && !st.sim) restore();
@@ -103,12 +103,12 @@
     } catch (e) { /* 다음 폴링에서 다시 */ }
   }
 
-  // 시뮬레이션: 같은 키를 쓰는 가상 청중. 첫 메시지 뒤 공급자를 직접 두드려 탐지기가 차단하게 만든다.
+  // 시뮬레이션: 같은 키를 쓰는 가상 공격자. 첫 메시지 뒤 공급자를 직접 두드려 탐지기가 차단하게 만든다.
   st.fakeCalls = 0;
   function startAudience() {
     if (!st.sim || st.audience || st.revoked) return;
     const w = API.simWorld();
-    add('sys', `다른 청중들도 같은 키로 호출하기 시작했어요`);
+    add('sys', `다른 공격자들도 같은 키로 호출하기 시작했어요`);
     st.audience = setInterval(() => {
       st.fakePeople = Math.min(42, st.fakePeople + (Math.random() < 0.5 ? 1 : 0));
       if (w.provider.call(w.LEAKED_KEY, 150) === 200) st.fakeCalls++;
@@ -121,7 +121,7 @@
   input.addEventListener('input', () => { autosize(); count(); });
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(input.value); } });
   $('#form').onsubmit = (e) => { e.preventDefault(); send(input.value); };
-  const ideas = ['오늘 점심 메뉴 추천해 줘', '시 한 편 써 줘', '파이썬으로 피보나치', '발표 잘하는 법'];
+  const ideas = ['오늘 점심 메뉴 추천해 줘', '시 한 편 써 줘', '파이썬으로 피보나치', '보안 점검 체크리스트'];
   $('#suggest').innerHTML = ideas.map((t) => `<button class="chip" type="button">${esc(t)}</button>`).join('');
   $('#suggest').onclick = (e) => { const b = e.target.closest('.chip'); if (b) send(b.textContent); };
   $('#blkClose').onclick = () => { $('#blocked').hidden = true; };

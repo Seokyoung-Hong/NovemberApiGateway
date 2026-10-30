@@ -1,6 +1,6 @@
 /* employee.js — 직원 채팅 페이지 (docs/demo-page-spec.md 페이지 B)
  * 게이트웨이 POST /v1/chat/completions 를 직원 토큰으로 부른다.
- * 장면 5에서 청중 화면은 차단되는 동안 이 화면은 예비 키로 계속 응답받는 걸 보여 준다. */
+ * 장면 5에서 공격자 화면은 차단되는 동안 이 화면은 예비 키로 계속 응답받는 걸 보여 준다. */
 (function () {
   'use strict';
   const { $, $$, esc, icon, toast } = UI;

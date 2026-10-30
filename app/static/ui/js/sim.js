@@ -413,7 +413,7 @@
       };
     }
 
-    // ---------- 청중 라이브(F절) ----------
+    // ---------- 공격자 라이브(F절) ----------
     const live = { calls: 0, ips: new Set() };
     function liveChat({ key, message, ip = 'me' }) {
       live.ips.add(ip);
@@ -545,7 +545,7 @@
         if (path.startsWith('/v1/')) body = { ...body, token: (headers.Authorization || '').replace(/^Bearer\s+/i, ''), ip: headers['X-Demo-Source-IP'] || '127.0.0.1', message: ((body.messages || []).slice(-1)[0] || {}).content || '' };
         return clone(route(method, path, body || {}));
       },
-      provider, // 청중 페이지 시뮬레이션용
+      provider, // 공격자 페이지 시뮬레이션용
       LEAKED_KEY,
     };
   }
