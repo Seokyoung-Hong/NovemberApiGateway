@@ -16,6 +16,7 @@ python -m venv .venv
 - 공급자 어댑터(mock·openrouter·openai, `app/providers.py`): `POST /demo/reset-openai`·`/demo/cleanup-openai`(`.env`에 `OPENAI_ADMIN_KEY`, 탐지 약 7분 지연). 명세 I절.
 - vLLM 공급자(자체 GPU, **해커톤 데모 전용 — 실제 아키텍처 그림 제외**): `POST /demo/reset-vllm`, 환경변수 `VLLM_BASE_URL`(코드 기본 `http://127.0.0.1:8100`은 로컬 개발용, 배포는 `https://vllm.dorm.sio2.kr`)·`VLLM_ADMIN_KEY`·`VLLM_MODEL`·`USAGE_LAG_S_VLLM`(기본 2). 명세 M절, 공급자 인터페이스 `docs/vllm-gateway-spec.md`.
 - 관리자 API는 `X-Admin-Key` 헤더(로컬 기본값 `admin`, 환경변수 `ADMIN_KEY`). 명세는 `docs/contract.md`.
+- 공급자 키 보관: `KEY_BACKEND=fernet`(로컬 기본)은 `VAULT_KEY`가 없으면 무작위 키를 만들어 `data/.vault_key`(권한 600)에 저장한다(고정 기본값 없음). 서버는 `KEY_BACKEND=kms`(AWS KMS 봉투 암호화, CMK `alias/november-gateway-kek`). 설계는 `docs/key-security-design.md`.
 - 기능 테스트 페이지: `http://127.0.0.1:8000/test`, 청중 페이지: `http://127.0.0.1:9000/live`.
 
 ## 테스트 서버 실행 (공개 모드, 계약 K절)

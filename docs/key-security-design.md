@@ -27,54 +27,58 @@ flowchart LR
     subgraph ADM["관리 평면"]
         A1["관리자 UI/API<br/>키 등록 (쓰기 전용)"]
     end
-    subgraph KMS["KMS / Vault Transit (외부, 키 반출 불가)"]
-        K1["KEK 마스터 키<br/>자동 교체"]
+    subgraph KMS["AWS KMS (적용됨, 키 반출 불가)"]
+        K1["KEK = CMK<br/>alias/november-gateway-kek"]
     end
     subgraph APP["게이트웨이 앱"]
-        E1["봉투 암호화 모듈"]
+        E1["봉투 암호화 모듈<br/>KEY_BACKEND=kms"]
         R1["중계 (키 사용 평면)"]
         D1["탐지 워커 (관리 키 평면)"]
-        C1["메모리 캐시<br/>TTL 5~15분, 디스크 금지"]
+        C1["DEK 메모리 캐시<br/>TTL 10분, 디스크·로그 금지"]
     end
-    DB[("DB<br/>암호문 + 감싼 DEK + key_version")]
-    AUD["감사 로그<br/>append-only"]
-    SM["별도 비밀 저장소<br/>공급자 관리 키 (Management/Admin)"]
+    DB[("DB credential.secret_enc<br/>v2:kms: 감싼 DEK · nonce · 암호문 · key_version · kek_id")]
+    AUD["(향후) 감사 로그<br/>append-only"]
+    SM["(향후) 별도 비밀 저장소<br/>공급자 관리 키 (현재 환경변수)"]
+    CT["AWS CloudTrail<br/>KMS 사용 기록"]
     P["AI 공급자"]
 
     A1 -- "평문 1회 (TLS)" --> E1
-    E1 -- "DEK 생성/감싸기" --> K1
-    E1 -- "암호문 저장" --> DB
+    E1 -- "GenerateDataKey (HTTPS + SigV4, 암호화 컨텍스트)" --> K1
+    E1 -- "AES-256-GCM 암호문 저장" --> DB
     R1 -- "암호문 조회" --> DB
-    R1 -- "DEK 복호화 요청 (IAM)" --> K1
+    R1 -- "Decrypt (HTTPS + SigV4, 암호화 컨텍스트)" --> K1
+    K1 --> CT
     R1 --> C1
     R1 -- "HTTPS + 공급자 키" --> P
-    D1 -- "관리 키 읽기" --> SM
+    D1 -. "(향후) 관리 키 읽기" .-> SM
     D1 -- "HTTPS + 관리 키 (사용량/폐기)" --> P
-    E1 & R1 & D1 -. "복호화·사용 이벤트" .-> AUD
+    E1 & R1 & D1 -. "(향후) 복호화·사용 이벤트" .-> AUD
 ```
-- **KEK**(마스터 키): KMS/HSM 안에서만 존재, 앱은 "감싸기/풀기"만 호출한다. 자동 교체(예: 연 1회)해도 DEK 재감싸기만 하면 된다.
-- **DEK**(키별 데이터 키): 크레덴셜마다 새로 만든다. AES-256-GCM으로 공급자 키를 암호화하고, **암호화 컨텍스트**(`credential_id`+`provider`)를 묶어 암호문을 다른 행으로 옮겨 붙이는 공격을 막는다.
-- **DB 저장 항목**: `secret_ciphertext`, `wrapped_dek`, `kek_id`, `key_version`, `masked`. 평문 키·키 해시 외 식별자는 저장하지 않는다.
-- **공급자 관리 키**(OpenRouter Management, OpenAI Admin)는 폐기·생성까지 가능한 **가장 강한 키**다. 일반 키와 **다른 KEK·다른 저장소·탐지 워커 전용 신원**에 두고, 중계 프로세스는 읽지 못하게 한다.
+- **KEK**(마스터 키): KMS 안에서만 존재(CMK `alias/november-gateway-kek`), 앱은 `GenerateDataKey`·`Decrypt`만 호출한다.
+- **DEK**(키별 데이터 키): 크레덴셜마다 KMS `GenerateDataKey`로 새로 만든다. AES-256-GCM으로 공급자 키를 암호화하고, **암호화 컨텍스트** `{"app":"november","purpose":"provider-api-key"}`를 묶어 암호문을 다른 용도로 옮겨 붙이지 못하게 한다. 복호화한 DEK는 프로세스 메모리에 TTL 10분 캐시(디스크·로그 금지).
+- **DB 저장 항목**: `credential.secret_enc` 한 문자열(`v2:kms:...`)에 감싼 DEK(`wrapped_dek`)·nonce·암호문·`key_version`·`kek_id`. `provider_ref`는 API_KEY의 경우 `sha256:<hex>`(식별·중복 확인용)만, 원문은 저장하지 않는다(공급자 호출에 원문이 필요하면 `secret_enc`를 복호화해 호출 시점에만 메모리에). 기존 원문 행은 호환 읽기.
+- **공급자 관리 키**(OpenRouter Management, OpenAI Admin)는 폐기·생성까지 가능한 **가장 강한 키**다. 현재는 환경변수로 중계와 같은 프로세스에 있다. **향후** 다른 저장소·탐지 워커 전용 신원으로 분리한다.
 
-### 3-1. 권장 구성: HashiCorp Vault + AWS KMS
-- **Vault가 공급자 키를 보관**한다. KV v2(버전·삭제 이력)에 `tenant/provider/credential` 경로로 저장하고, DB에는 **경로(`secret_ref`)와 메타데이터만** 둔다(평문·암호문 모두 DB에 없음). 필요하면 Transit으로 앱이 암호화 서비스를 호출하게 해 키 자체를 앱이 보지 않게 한다.
-- **AWS KMS가 Vault 마스터 키를 보호**한다(자동 언실). 사람이 언실 키를 다루지 않고, 마스터 키는 KMS 밖으로 나가지 않는다.
-- **인증과 정책**: 게이트웨이 서버는 **AppRole**(RoleID + SecretID, 단기 토큰)로 로그인한다. 평면별 정책을 분리한다: **등록(관리 평면) = 쓰기 전용**, **사용(중계 평면) = 읽기**, **탐지 워커 = 관리 키 경로만 읽기**. 서로의 경로는 읽지 못한다.
-- **동적 시크릿(가능한 공급자)**: 공급자가 키 발급 API를 제공하면(OpenRouter 키 생성, OpenAI 서비스 계정) Vault가 단기 키를 발급·갱신·폐기(리스 TTL)하게 해 장기 키 보관을 줄인다.
-- **감사**: Vault 감사 장치가 모든 읽기·쓰기를 기록하고 게이트웨이 감사 로그와 함께 append-only 저장소로 보낸다(키 값은 기록되지 않는다).
-- **소규모·Vault 미사용 대안**: Vault를 운영하기 어려우면 3절의 KMS 봉투 암호화(DEK/KEK)로 DB 암호문을 보호한다.
+### 3-1. 현재 적용 구성: AWS KMS 봉투 암호화
+- **백엔드 선택** `KEY_BACKEND=kms|fernet`. 서버 = `kms`, 로컬 개발 기본 = `fernet`. Fernet 백엔드의 `VAULT_KEY`는 **기본값이 없다**: 로컬은 미설정 시 무작위 키를 만들어 `data/.vault_key`(권한 600)에 저장해 쓰고, 서버(공개 모드)는 환경변수 필수.
+- **KMS 인증**: 서버(Proxmox CT)는 AWS 밖이라 **최소 권한 IAM 사용자**(해당 CMK에 `kms:GenerateDataKey`·`kms:Decrypt`만)의 액세스 키를 `/opt/november/.env.server`(권한 600)에 둔다. 호출은 HTTPS(TLS) + SigV4 서명, 사용 기록은 CloudTrail.
+- **한계**: 장기 액세스 키가 서버 파일에 있다. 운영은 IAM Roles Anywhere 또는 AWS 안의 IAM 역할로 바꾼다.
+- **이관**: 기존 Fernet 암호문은 읽기 호환되고 `scripts/rekey_credentials.py`로 KMS 봉투 암호문으로 일괄 재암호화한다.
+- **권한·로그**: DB 파일·`.env.server`·`data/` 권한 600/700. 키 값은 로그·응답에 남기지 않고 마스킹만.
+
+### 3-2. 향후: HashiCorp Vault
+- KV v2 키 보관(DB에는 경로만), Transit, 동적 시크릿(가능한 공급자의 단기 키), AppRole 인증과 평면별 정책(등록=쓰기 전용 / 사용=읽기 / 탐지=관리 키 경로), Vault 감사 장치. 테넌트별 KEK는 `docs/multi-key-management-design.md`. 모두 **미적용**.
 
 ## 4. 저장 방식 비교
 | 방식 | 설명 | 장점 | 한계 | 단계 |
 |---|---|---|---|---|
-| **A. Fernet + 환경변수 키** | 앱 프로세스가 환경변수 키로 암호화(현재) | 구현 단순 | 키와 암호문이 같은 호스트, 감사·교체 없음 | 해커톤 PoC |
-| **B. 봉투 암호화 + KMS** | 위 3절 구조 | 키 반출 불가, 감사 가능, 자동 교체 | KMS 의존, 호출 지연 | **운영 기본** |
-| **C. Vault/Secrets Manager 동적 키** | 필요할 때 공급자에 단기 키를 발급(JIT), TTL 후 자동 폐기 | 장기 키가 없다 | 공급자가 키 발급 API 지원 필요(OpenRouter·OpenAI 서비스 계정은 가능) | 운영 고도화 |
-| **D. WIF** | 단기 토큰만 | 저장할 비밀 없음 | 공급자 지원 필요 | 가능하면 최우선 |
+| **A. Fernet + 환경변수 키** | 앱 프로세스가 `VAULT_KEY`로 암호화(기본값 없음, 로컬은 `data/.vault_key` 자동 생성) | 구현 단순 | 키와 암호문이 같은 호스트 | **로컬 개발·폴백** |
+| **B. 봉투 암호화 + KMS** | 위 3절 구조 | KEK 반출 불가, CloudTrail 기록 | KMS 의존, 호출 지연(DEK 캐시 10분으로 완화) | **적용됨(서버)** |
+| **C. Vault/Secrets Manager 동적 키** | 필요할 때 공급자에 단기 키를 발급(JIT), TTL 후 자동 폐기 | 장기 키가 없다 | 공급자가 키 발급 API 지원 필요(OpenRouter·OpenAI 서비스 계정은 가능) | 향후 |
+| **D. WIF** | 단기 토큰만 | 저장할 비밀 없음 | 공급자 지원 필요 | 가능하면 최우선(Mock STS로 PoC) |
 
 ## 5. 런타임 규칙
-- 복호화는 **사용 순간**에만 한다. 결과는 프로세스 메모리 캐시에 TTL(5~15분)로만 두고 디스크·로그·예외 메시지에 쓰지 않는다. 교체·폐기 이벤트가 오면 캐시를 즉시 비운다.
+- 복호화는 **사용 순간**에만 한다. KMS로 푼 DEK는 프로세스 메모리 캐시에 TTL 10분으로만 두고 디스크·로그·예외 메시지에 쓰지 않는다. 교체·폐기 이벤트가 오면 캐시를 즉시 비운다.
 - 키를 명령행 인자·URL·쿼리에 넣지 않는다(헤더로만). 환경변수에 평문 키를 두지 않는다.
 - 시크릿 파일은 권한 600, 소유 서비스 계정만. 서비스는 비특권 사용자로 실행.
 - 응답·로그에는 마스킹(`앞3자...뒤4자`)과 `credential_id`만 남긴다.
@@ -91,30 +95,31 @@ flowchart LR
 - **비밀 스캔**: 저장소·CI에서 키 패턴 탐지(`sk-`, `sk-or-` 등).
 - **사용량 대조**(이 시스템의 핵심): 위 보호가 뚫려 키가 새도 공급자 사용량과 게이트웨이 기록의 차이로 탐지해 폐기한다. 키 보관은 "새지 않게", 대조는 "새도 빨리 막게"를 맡는 두 겹의 방어다.
 
-## 8. 현재 PoC 구현과의 격차 (솔직한 현황)
-`app/vault.py`는 Fernet(AES-128-CBC + HMAC-SHA256)이다. 아래는 코드·서버 확인 결과다.
+## 8. 격차 현황 (해소 / 잔여)
+서버는 `KEY_BACKEND=kms`(AWS KMS 봉투 암호화), 로컬 개발은 `fernet`이다. 항목별 상태는 다음과 같다.
 
-| # | 격차 | 영향 | 개선 |
+| # | 격차(이전) | 상태 | 현재 |
 |---|---|---|---|
-| 1 | **`VAULT_KEY` 환경변수가 없으면 코드의 고정 문자열(`november-demo-vault`)로 키를 만든다.** 배포 서버에 `VAULT_KEY`가 설정되어 있지 않아 이 기본값이 쓰인다 | 공개 저장소를 아는 사람은 DB만 얻으면 암호문을 풀 수 있다 | 기본값 제거(미설정 시 기동 거부), 무작위 키를 비밀 저장소에서 주입 |
-| 2 | **`credential.provider_ref`에 API 키 원문이 그대로 저장된다**(Mock·vLLM의 API_KEY는 키 문자열이 곧 공급자 쪽 식별자) | 암호화 컬럼이 있어도 같은 DB에 평문이 남아 암호화가 무력화된다 | 공급자 쪽 식별자를 키의 **SHA-256 해시**로 바꾸고(공급자 인터페이스가 해시를 owner로 받게 변경), 원문 컬럼 제거 |
-| 3 | DB 파일 권한 644, 암호화 키와 같은 호스트 | 같은 호스트의 다른 프로세스·사용자가 읽을 수 있다 | 600, 전용 사용자, KEK는 외부 KMS |
-| 4 | 암호화 컨텍스트 없음, 키 버전·교체 이력 없음 | 암호문 바꿔치기와 키 교체 추적 불가 | `key_version`, `kek_id`, 컨텍스트 바인딩 |
-| 5 | 복호화·사용 감사 로그 없음 | 누가 언제 키를 썼는지 알 수 없다 | 감사 이벤트 추가 |
-| 6 | 공급자 관리 키(Management/Admin)를 환경변수로 보관, 중계와 같은 프로세스 | 중계가 뚫리면 키 생성·삭제 권한까지 노출 | 탐지 워커를 별도 프로세스·신원으로 분리 |
-| 7 | 관리자 키가 고정값 `admin`, `/demo/*` 응답에 유출 키 포함(데모용) | 공개 서버에서 추측 가능 | 운영에서는 SSO·역할 기반, 데모 응답 제거 |
-| 8 | 정기 교체 일정·비상 절차 없음 | 사고 대응 의존 | 6절 절차 적용 |
+| 1 | `VAULT_KEY` 미설정 시 코드의 고정 문자열로 키 생성 | **해소** | 기본값 제거. 로컬은 무작위 키를 `data/.vault_key`(600)에 생성, 서버는 환경변수 필수. 서버 기본 백엔드는 KMS |
+| 2 | `credential.provider_ref`에 API 키 원문 저장 | **해소** | API_KEY는 `sha256:<hex>`만 저장, 원문이 필요하면 `secret_enc`를 복호화해 호출 시점에만 메모리에. 기존 원문 행은 호환 읽기(재암호화 스크립트로 정리) |
+| 3 | DB 파일 권한 644, 암호화 키와 같은 호스트 | **해소** | DB·`.env.server`·`data/` 600/700, KEK는 KMS(반출 불가) |
+| 4 | 암호화 컨텍스트·키 버전 없음 | **해소** | 암호화 컨텍스트 바인딩, 암호문에 `key_version`·`kek_id` 포함 |
+| 5 | 복호화·사용 감사 로그 없음 | **잔여** | KMS 호출(`GenerateDataKey`·`Decrypt`)은 CloudTrail에 남지만, 앱 단 감사 로그(누가 어떤 크레덴셜을 썼는지)는 없다 |
+| 6 | 공급자 관리 키가 환경변수, 중계와 같은 프로세스 | **잔여** | 그대로. 별도 경로·탐지 워커 전용 신원은 향후 |
+| 7 | 관리자 키 고정값 `admin`, `/demo/*` 응답에 유출 키 포함 | **잔여** | 데모 서버 그대로. 운영은 SSO·역할 기반 |
+| 8 | 정기 교체 일정·비상 절차 없음 | **잔여** | 6절 절차 미자동화 |
+| 9 | (신규) KMS 인증용 장기 IAM 액세스 키가 서버 파일에 있음 | **잔여(한계)** | 최소 권한·권한 600으로 완화. 운영은 IAM Roles Anywhere 또는 AWS 안의 IAM 역할 |
 
 > 키가 사람·팀 단위로 늘어나는 B2B 구조(테넌트별 KEK, 인당 1키, 예비 키 풀)는 `docs/multi-key-management-design.md` 참조.
 
 ## 9. 단계별 로드맵
 | 단계 | 내용 | 효과 |
 |---|---|---|
-| **P1 (즉시, 코드 수정 작음)** | `VAULT_KEY` 기본값 제거·기동 시 필수화, `provider_ref` 원문 제거(해시), DB·환경파일 권한 600, 키 값 로깅 금지 점검 | 격차 1~3 해소 |
-| P2 | `vault.py`를 교체 가능한 인터페이스(`encrypt(plain, context)` / `decrypt(enc, context)`)로 바꾸고 KMS 봉투 암호화 백엔드 추가, `key_version`·`kek_id` 컬럼 | 격차 3·4, 키 반출 불가 |
-| P3 | 감사 로그, 관리 키 분리 프로세스, 허니 크레덴셜 | 격차 5·6, 침해 탐지 |
-| P4 | WIF·동적(JIT) 키 우선 적용, 정기 교체 자동화, 비상 훈련 | 저장할 장기 키 최소화 |
+| **P1 — 완료** | `VAULT_KEY` 기본값 제거, `provider_ref` 원문 제거(해시), DB·환경파일 권한 600/700, 키 값 로깅 금지 | 격차 1~3 해소 |
+| **P2 — 완료** | `KEY_BACKEND`(kms 또는 fernet), KMS 봉투 암호화 백엔드(DEK·AES-256-GCM·암호화 컨텍스트·`key_version`·`kek_id`), `scripts/rekey_credentials.py` | 격차 3·4 해소, KEK 반출 불가 |
+| P3 (향후) | append-only 감사 로그, 관리 키 별도 경로·전용 신원, 허니 크레덴셜, IAM Roles Anywhere | 격차 5·6·9 |
+| P4 (향후) | HashiCorp Vault, 테넌트별 KEK, WIF·동적(JIT) 키, 정기 교체 자동화, 비상 훈련 | 격차 8, 저장할 장기 키 최소화 |
 
 ## 10. 아키텍처 그림에 넣을 것
-- 3절 다이어그램의 **KMS(KEK)**, **봉투 암호화 모듈**, **암호문 DB**, **감사 로그**, **별도 관리 키 저장소**를 컴포넌트도에 박스로 추가하고, 화살표 라벨에 보안 프로토콜(TLS, IAM 인증 KMS 호출, 암호문 저장)을 적는다.
-- 현재 구현(Fernet+환경변수)과 목표 구성(KMS 봉투 암호화)을 같은 그림에서 색이나 점선으로 구분한다.
+- **적용됨(실선)**: KMS(CMK `alias/november-gateway-kek`), 봉투 암호화 모듈, 암호문 DB(`secret_enc`), CloudTrail. 화살표 라벨: `GenerateDataKey`·`Decrypt`(HTTPS + SigV4, 최소 권한 IAM), 암호화 컨텍스트, DEK 캐시 10분.
+- **향후(점선·회색)**: HashiCorp Vault, append-only 감사 로그, 관리 키 별도 경로, 테넌트별 KEK.

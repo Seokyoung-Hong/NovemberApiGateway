@@ -26,7 +26,7 @@
 | D2 | `detector/router.py` — **대시보드 API·데모 제어** | 상태·차액·시계열·사고·이벤트 조회, 공격 시뮬레이터(Mock 전용), 리셋(`/demo/reset`, `/demo/reset-openrouter`·`-openai`), 정리(`/demo/cleanup-*`), 허니키 호출 |
 | U5 | `usage.py` + `pricing.py` — **사용량 집계·예측** | 서비스별 토큰·비용 집계, 모델별 단가표 기반 예상 비용, 선형 월말 예측, 월 예산 |
 | T1 | `testpage.py` + `static/test.html` | 디자인 없는 기능 테스트 페이지 `/test` |
-| C1 | `contract.py`, `db.py`, `vault.py` | 공용 상수·판정 함수·`.env` 로드 / SQLite 스키마 / 공급자 키 암호화 모듈(**목표: KMS 봉투 암호화, PoC: Fernet**) |
+| C1 | `contract.py`, `db.py`, `vault.py` | 공용 상수·판정 함수·`.env` 로드 / SQLite 스키마 / 공급자 키 암호화 모듈(**적용됨: `KEY_BACKEND=kms` AWS KMS 봉투 암호화(서버), `fernet`(로컬 개발·폴백)**) |
 | C2 | `clientip.py` | 관리자 키 비교, 출발 IP 결정(신뢰 프록시 XFF·`X-Demo-Source-IP`), 공개 모드 가드(`/demo/*`·`/idp/token`). 게이트웨이·Mock 공용 |
 | C3 | `main.py` | 앱 조립(라우터 5개 등록, CORS 전체 허용, 시작 시 `init_db`·워커 기동) |
 
@@ -39,11 +39,11 @@
 ### 2-4. 저장소
 | ID | 이름 | 내용 |
 |---|---|---|
-| S1 | DB (PoC: SQLite `gateway.db`) | setting, allowed_cidr, service, gateway_token(해시), credential(**메타데이터 + Vault 경로 `secret_ref`**, 마스킹), usage_log, provider_usage, access_denied_log, incident, event, honeykey, honeykey_event, trusted_identity. **평문 키·암호문은 DB에 두지 않는다**(PoC는 Fernet 암호문을 저장) |
-| S2 | **AWS KMS** (PoC: 프로세스 내 Fernet) | Vault의 마스터 키를 보호한다(**자동 언실**). 키 반출 불가, IAM 인증. Vault 없이 쓰는 소규모 구성에서는 KMS 봉투 암호화(DEK/KEK)로 DB 암호문을 보호 |
-| S3 | 감사 로그 (append-only) | 키 등록·복호화·사용·폐기·교체 이벤트(시각·신원·`credential_id`·결과, **키 값 제외**) |
-| S4 | 관리 키 경로 (Vault KV 안의 별도 경로·정책) | 공급자 관리 키(OpenRouter Management, OpenAI Admin). 일반 키와 다른 경로·정책·탐지 워커 전용 AppRole |
-| S5 | **HashiCorp Vault** | 공급자 API 키 보관(**KV v2**, 버전·삭제 이력), **Transit**(암호화 서비스), **동적 시크릿**(가능한 공급자는 단기 키 발급·TTL 후 자동 폐기), **AppRole 인증**(평면별 정책: 등록=쓰기 전용, 사용=읽기, 탐지=관리 키 경로), **감사 장치**. PoC는 Vault 대신 로컬 Fernet |
+| S1 | DB (SQLite `gateway.db`, 운영 전환 시 PostgreSQL) | setting, allowed_cidr, service, gateway_token(해시), credential(메타데이터, 마스킹, **`secret_enc` = 봉투 암호문 `v2:kms:...`**(감싼 DEK·nonce·암호문·`key_version`·`kek_id`), **`provider_ref` = API_KEY는 `sha256:<hex>` 해시만**), usage_log, provider_usage, access_denied_log, incident, event, honeykey, honeykey_event, trusted_identity. **평문 키는 DB에 없다**. DB 파일·`data/` 권한 600/700 (**적용됨**) |
+| S2 | **AWS KMS** (**적용됨**) | CMK `alias/november-gateway-kek`(KEK, 반출 불가). 크레덴셜마다 `GenerateDataKey`로 DEK 생성, 복호화는 `Decrypt`. 암호화 컨텍스트 `{"app":"november","purpose":"provider-api-key"}` 바인딩. 최소 권한 IAM 사용자(해당 CMK에 `kms:GenerateDataKey`·`kms:Decrypt`만), 사용 기록은 CloudTrail |
+| S3 | 감사 로그 (append-only) — **향후** | 키 등록·복호화·사용·폐기·교체 이벤트(키 값 제외). 현재는 KMS 호출만 CloudTrail에 남는다 |
+| S4 | 관리 키 별도 경로 — **향후** | 공급자 관리 키(OpenRouter Management, OpenAI Admin). 현재는 환경변수, 중계와 같은 프로세스. 향후 별도 경로·탐지 워커 전용 신원 |
+| S5 | **HashiCorp Vault** — **향후** | KV v2 키 보관, Transit, 동적 시크릿, AppRole 인증, 감사 장치. 현재 미적용(키 보관은 S1 암호문 + S2 KMS) |
 
 ### 2-5. 외부 AI 공급자
 | ID | 이름 | 사용량 조회 | 키 폐기 | 반영 지연(실측) |
@@ -61,9 +61,10 @@
 | 언어·런타임 | **Python 3**, **Uvicorn**(ASGI 서버), `asyncio` | 게이트웨이·Mock 구동, 백그라운드 탐지 워커 |
 | 웹 프레임워크 | **FastAPI**(+ Pydantic) | 중계·관리·대시보드·사용량 API, 테스트 페이지 서빙 |
 | HTTP 클라이언트 | **httpx** | 공급자 중계(스트리밍 포함), 사용량 조회·폐기 호출, JWKS 조회 |
-| 암호·토큰 | Python **cryptography**(Fernet, RSA/RS256 검증), **JWT**, **OIDC / OAuth 2.0**(PKCE, Device Authorization Grant) | 키 암호화(PoC), 사용자·워크로드 WIF 토큰 검증 |
+| 암호·토큰 | Python **cryptography**(**AES-256-GCM**, Fernet 폴백, RSA/RS256 검증), **JWT**, **OIDC / OAuth 2.0**(PKCE, Device Authorization Grant) | 공급자 키 암호화, 사용자·워크로드 WIF 토큰 검증 |
 | 저장소 | **SQLite**(PoC) → **PostgreSQL**(운영) | 사용량 로그, 크레덴셜(암호문), 사고·이벤트 |
-| 키 관리(목표) | **HashiCorp Vault**(KV v2·Transit·동적 시크릿·AppRole), **AWS KMS**(Vault 자동 언실·마스터 키 보호) | 공급자 키 보관, 관리 키 별도 경로, 키 반출 불가 |
+| 키 관리(**적용됨**) | **AWS KMS**(CMK `alias/november-gateway-kek`, 봉투 암호화), **boto3**(KMS 호출, SigV4), **AWS IAM**(최소 권한 사용자), **AWS CloudTrail**(KMS 사용 기록) | 공급자 키 봉투 암호화, KEK 반출 불가 |
+| 키 관리(향후) | **HashiCorp Vault**(KV v2·Transit·동적 시크릿·AppRole) | 키 보관 서버화, 관리 키 별도 경로 |
 | 진입점·TLS | **Nginx Proxy Manager**(Nginx), **Let's Encrypt** 와일드카드 인증서 | TLS 종료, 도메인 라우팅, `/live` 경로 분기 |
 | 서버·가상화 | **Proxmox VE**, **LXC**(Ubuntu 24.04), **systemd** | 게이트웨이 CT 구동·자동 재시작 |
 | 네트워크(임시/보조) | **Tailscale**(**WireGuard**) | 이전 임시 구성에서 사용, 현재 목표 구성은 Proxmox 사설 LAN |
@@ -102,10 +103,14 @@ flowchart LR
             M1["가짜 공급자<br/>사용량 · 폐기 · STS"]
             M2["청중 라이브 /live"]
         end
-        S1[("SQLite (운영: PostgreSQL)<br/>메타데이터 + Vault 경로 secret_ref")]
-        S2["AWS KMS<br/>Vault 자동 언실 · 마스터 키 보호<br/>PoC: Fernet (cryptography)"]
-        S5["HashiCorp Vault<br/>KV v2 키 보관 · Transit · 동적 시크릿<br/>AppRole 인증 · 감사 장치"]
-        S3[("감사 로그 append-only<br/>예: AWS CloudTrail · Grafana Loki")]
+        S1[("SQLite (운영: PostgreSQL)<br/>secret_enc 봉투 암호문 v2:kms<br/>provider_ref = sha256 해시 · 권한 600")]
+        S5["(향후) HashiCorp Vault<br/>KV v2 · Transit · 동적 시크릿 · AppRole"]
+        S3[("(향후) 감사 로그 append-only")]
+    end
+
+    subgraph AWS["AWS (적용됨)"]
+        S2["AWS KMS (적용됨)<br/>CMK alias/november-gateway-kek<br/>GenerateDataKey · Decrypt"]
+        CT["AWS CloudTrail<br/>KMS 사용 기록"]
     end
 
     U1 -- "HTTPS + Bearer 토큰 또는 JWT" --> NPM
@@ -136,26 +141,26 @@ flowchart LR
     D1 -- "비교 · 판정 · 사고" --> S1
     D2 --> S1
     U5 --> S1
-    G2 -- "키 등록 (쓰기 전용)<br/>TLS + AppRole 단기 토큰" --> S5
-    G4 -- "키 조회 (TLS + 단기 토큰)<br/>메모리 캐시 TTL" --> S5
-    S5 -- "자동 언실 (TLS + IAM)" --> S2
-    S5 -. "감사 장치" .-> S3
-    G2 -. "등록 이벤트" .-> S3
-    G4 -. "조회·사용 이벤트" .-> S3
-    D1 -- "관리 키 읽기<br/>전용 경로·정책" --> S5
+    G2 -- "키 등록: GenerateDataKey<br/>HTTPS + SigV4 (IAM 최소 권한)<br/>암호화 컨텍스트" --> S2
+    G4 -- "복호화: Decrypt (HTTPS + SigV4)<br/>DEK 메모리 캐시 TTL 10분" --> S2
+    S2 --> CT
+    G2 -. "(향후) AppRole 키 등록" .-> S5
+    G4 -. "(향후) 키 조회" .-> S5
+    D1 -. "(향후) 관리 키 전용 경로" .-> S5
+    G4 -. "(향후) 사용 이벤트" .-> S3
 ```
 
-**범례**: 실선 = 정상 경로, 점선 = 보조·우회 경로(청중/공격자의 직접 호출은 게이트웨이를 거치지 않음). 구간별 프로토콜은 5-1절 표 참조.
+**범례**: 실선 = 정상 경로(적용됨), 점선 = 보조·우회 경로(청중/공격자의 직접 호출은 게이트웨이를 거치지 않음) 또는 **(향후)** 표시된 미적용 구성(Vault·감사 로그·관리 키 경로). 구간별 프로토콜은 5-1절 표 참조.
 
 ## 4. 핵심 시퀀스
 ### 4-1. 정상 호출
 1. 사용자가 `Authorization: Bearer <API 토큰 또는 JWT>`로 `POST /v1/chat/completions`.
 2. G1: 허니키 아님? → 허니키로 차단된 IP 아님? → 출발 IP ∈ 허용 CIDR?(등록된 대역이 없으면 통과) → G3가 JWT 검증 또는 토큰 해시 일치 → 서비스 ACTIVE?
-3. 현재 `PRIMARY ACTIVE` 크레덴셜 선택, S2에서 키 복호화(WIF 크레덴셜은 STS 단기 토큰) → 공급자로 중계, 스트리밍 포함.
+3. 현재 `PRIMARY ACTIVE` 크레덴셜 선택, `secret_enc`의 감싼 DEK를 S2(KMS `Decrypt`, DEK 캐시 10분)로 풀어 AES-256-GCM 복호화(WIF 크레덴셜은 STS 단기 토큰) → 공급자로 중계, 스트리밍 포함.
 4. 응답이 200이고 `usage`(또는 비용)가 있으면 `usage_log` 1행 기록 → 응답 반환(업스트림 401·네트워크 오류는 502).
 
 ### 4-2. 탐지와 자동 대응
-판정 방식은 레거시(허용 무단 호출 수 한도 × 공급자별 비율)가 기본이고, 사용자가 사용량 방식(공급자 보고 중 모르는 호출 %, 기본 5·10·20%) 또는 건수 방식(기본 1·5·10건)을 고르면 그 임계로 판정한다(contract.md O절).
+판정 방식은 레거시(허용 무단 호출 수 한도 × 공급자별 비율)가 기본이고, 사용자가 사용량 방식(공급자 보고 중 모르는 호출 %, 기본 5·10·20%) 또는 건수 방식(기본 1·5·10건)을 고르면 그 임계로 판정한다(contract.md O절). 허용 오차는 관리자 설정 `tolerance_calls`(기본 0), 게이트웨이 쪽에는 내부 호출(승격 검증·폐기 확인)과 진행 중 요청을 더한다. 워커 주기 1초(`POLL_INTERVAL_S`), 속도 제한 공급자는 어댑터 `min_poll_s`(OpenRouter 3초, OpenAI 15초)마다만 조회(contract.md P절).
 ```mermaid
 sequenceDiagram
     participant W as 탐지 워커(D1)
@@ -164,12 +169,12 @@ sequenceDiagram
     participant DB as SQLite
     participant X as 공격자
     X->>P: 유출된 키로 직접 호출 (게이트웨이 기록 없음)
-    loop 2초마다
+    loop 1초마다(공급자별 min_poll_s)
         W->>A: fetch_usage(크레덴셜)
         A->>P: 사용량 조회
         P-->>A: 누적 {호출 수 | 비용 | 토큰}
         W->>DB: provider_usage 적재, usage_log(스냅샷−지연까지) 합산
-        W->>W: 차액 = 공급자 − 게이트웨이 − 허용오차 → judge()
+        W->>W: 차액 = 공급자 − (게이트웨이 + 내부 호출) − 허용오차 → judge()
     end
     Note over W: 차액 ≥ 한도의 70%(실제 공급자 35%) → BREACH
     W->>A: revoke(키)
@@ -220,9 +225,9 @@ sequenceDiagram
    - **경고**: 데모 관리자 키는 고정값 `admin`이라 추측 가능하다. 공개 서버에서는 NPM 단 접근 제한(IP·인증)을 함께 걸어야 한다.
    - 사용자 중계 `/v1`의 IP 제한은 기본 꺼짐(허용 CIDR 0개 = 모두 허용). 관리자가 대역을 등록해야 제한된다.
 2. **NPM ↔ 게이트웨이(Proxmox 사설 LAN)**: 신뢰 프록시. 게이트웨이 CT는 NPM에서만 접근하도록 Proxmox 방화벽으로 제한한다. `X-Forwarded-For`는 신뢰 프록시일 때만 인정.
-3. **게이트웨이 ↔ 공급자**: 실제 키는 암호문(DB)과 KMS에만 존재하고 평문은 사용 순간 메모리에만 잠깐 있다. 사용자는 키를 보지 못한다.
+3. **게이트웨이 ↔ 공급자**: 실제 키는 DB에 봉투 암호문으로만 있고(KEK는 KMS 밖으로 나가지 않음), 평문은 사용 순간 메모리에만 잠깐 있다. `provider_ref`에는 해시만 있다. 사용자는 키를 보지 못한다.
 3-2. **사용자·워크로드 ↔ 회사 IdP ↔ 게이트웨이**: 인증은 IdP가 하고(MFA·계정 상태), 게이트웨이는 토큰 검증과 정책 매핑만 한다. 신뢰 대상은 등록된 issuer와 `sub`·`groups` 규칙뿐이다.
-3-1. **게이트웨이 ↔ Vault·감사 로그, Vault ↔ KMS**: IAM 인증된 TLS 호출. 등록(쓰기)·사용(복호화)·탐지(관리 키) 권한을 서로 다른 신원으로 나눈다. 상세는 `docs/key-security-design.md`.
+3-1. **게이트웨이(Proxmox CT, AWS 밖) ↔ AWS KMS** (적용됨): HTTPS(TLS) + SigV4 서명, 해당 CMK에 `GenerateDataKey`·`Decrypt`만 허용된 최소 권한 IAM 사용자. 액세스 키는 `/opt/november/.env.server`(권한 600)에 있다 — **한계**: 장기 액세스 키이므로 운영은 IAM Roles Anywhere 또는 AWS 안의 IAM 역할로 바꾼다. 평면별(등록/사용/탐지) 신원 분리와 Vault·감사 로그는 **향후**. 상세는 `docs/key-security-design.md`.
 4. **공격자 ↔ 공급자**: 게이트웨이를 통과하지 않는 경로. 이 경로가 사용량 대조의 탐지 대상이다.
 
 ## 5-1. 통신 구간별 보안 프로토콜 (가볍게)
@@ -232,27 +237,27 @@ sequenceDiagram
 | 1 | 사용자/청중 → NPM(`sio2.kr`) | HTTPS (TLS, Let's Encrypt `*.sio2.kr`, HTTP/2, SSL 강제) | 사용자: Bearer API 토큰(서버는 SHA-256 해시만 보관) 또는 OIDC JWT(RS256) / 청중: 유출 키 + IP당 호출 속도 제한 | 허용 IP 대역은 선택(미설정 시 모두 허용) |
 | 2 | 관리자 → NPM → `/admin/*`·`/demo/*` | HTTPS | `X-Admin-Key` 헤더(상수시간 비교), 공개 모드에서 `/docs` 비활성 | 데모 서버는 고정 키(약함) — 운영은 SSO·역할 기반 |
 | 3 | NPM → 게이트웨이(Proxmox CT) | 같은 사설 LAN(Proxmox 브리지)의 HTTP — 공개 인터넷에 노출되지 않음 | 신뢰 프록시 IP에서 온 `X-Forwarded-For`만 인정, CT 방화벽은 NPM만 허용 | 운영에서는 내부 TLS(mTLS) 권장 |
-| 4 | 게이트웨이 → AI 공급자(OpenAI·OpenRouter) | HTTPS (TLS 1.2+, 시스템 CA 검증) | 공급자 API 키(Bearer). WIF 크레덴셜은 STS 15분 단기 토큰 | 키는 Vault에서 복호화해 요청마다 사용 |
+| 4 | 게이트웨이 → AI 공급자(OpenAI·OpenRouter) | HTTPS (TLS 1.2+, 시스템 CA 검증) | 공급자 API 키(Bearer). WIF 크레덴셜은 STS 15분 단기 토큰 | 키는 봉투 암호문을 KMS로 풀어 요청마다 사용 |
 | 5 | 탐지 워커 → 공급자 사용량·폐기 API | HTTPS | 별도 관리 키(OpenRouter Management, OpenAI Admin) — 환경변수로만 보관 | 최소 권한 키 권장 |
 | 6 | 사용자 서비스 → IdP → 게이트웨이(WIF) | HTTPS(JWKS 조회) | JWT 서명(RS256만 허용, alg 화이트리스트), `exp`·`aud`·`iss` 검증, 신뢰 규칙(`sub` 패턴) | PoC는 로컬 가짜 IdP(HTTP) |
-| 7 | 게이트웨이 → 저장소(DB, 같은 호스트 또는 사설망) | 로컬 파일 또는 사설망 TLS | 공급자 키는 **봉투 암호화**(DEK로 AES-256-GCM, DEK는 KMS의 KEK로 감쌈, 암호화 컨텍스트 바인딩), 토큰은 SHA-256 해시, 응답엔 마스킹만 | PoC: Fernet(AES-128-CBC + HMAC-SHA256), 환경변수 키 |
-| 9 | 게이트웨이 → HashiCorp Vault | HTTPS (TLS) | **AppRole 인증**(단기 토큰, TTL), 평면별 정책(등록=쓰기 전용 / 사용=읽기 / 탐지=관리 키 경로), 조회·사용 이벤트는 Vault 감사 장치와 감사 로그에 기록 | 키 평문은 사용 순간 메모리에만, 캐시 TTL 5~15분 |
-| 10 | Vault ↔ AWS KMS | HTTPS (TLS) | **IAM 인증**, 마스터 키 반출 불가(자동 언실·감싸기만) | Vault 재시작 시 사람이 언실 키를 다루지 않는다 |
-| 11 | 게이트웨이 → 감사 로그 | HTTPS (TLS) | append-only, 키 값 미포함 | 사용 이상 탐지·사후 추적용 |
+| 7 | 게이트웨이 → 저장소(DB, 같은 호스트) | 로컬 파일(권한 600, `data/` 700) | 공급자 키는 **봉투 암호화**(크레덴셜별 DEK로 AES-256-GCM, `v2:kms:...` 한 문자열에 감싼 DEK·nonce·암호문·`key_version`·`kek_id`), `provider_ref`는 `sha256:` 해시만, 토큰은 SHA-256 해시, 응답·로그엔 마스킹만 (**적용됨**) | 기존 Fernet 암호문·원문 `provider_ref`는 읽기 호환, `scripts/rekey_credentials.py`로 일괄 재암호화 |
+| 9 | 게이트웨이 → AWS KMS (**적용됨**) | HTTPS (TLS) | **SigV4 서명 + 최소 권한 IAM 사용자**(CMK `alias/november-gateway-kek`에 `kms:GenerateDataKey`·`kms:Decrypt`만), **암호화 컨텍스트** `{"app":"november","purpose":"provider-api-key"}`, KEK 반출 불가, CloudTrail 기록 | DEK는 프로세스 메모리에 TTL 10분 캐시(디스크·로그 금지). 한계: 장기 액세스 키를 `.env.server`(600)에 보관 |
+| 10 | 게이트웨이 → HashiCorp Vault (**향후**) | HTTPS (TLS) | AppRole 인증, 평면별 정책 | 미적용 |
+| 11 | 게이트웨이 → 감사 로그 (**향후**) | HTTPS (TLS) | append-only, 키 값 미포함 | 미적용(현재는 KMS 호출만 CloudTrail) |
 | 12 | 개인 사용자 ↔ 회사 IdP / → 게이트웨이 | HTTPS (TLS) | OIDC **Authorization Code + PKCE**(브라우저), **Device Authorization Grant**(CLI·IDE), 단기 토큰(15~60분), 게이트웨이는 RS256 서명·`exp`·`aud`·`iss`·`groups` 검증 | 장기 비밀 없음, 오프보딩은 IdP 비활성화로 즉시 반영, 사람 단위 귀속(목표 구성) |
 | 8 | 공격자 → 공급자(우회 경로) | HTTPS | 유출된 키 | 게이트웨이를 거치지 않으므로 **사용량 대조로 탐지** |
 
 - 요약: **바깥(인터넷) 구간은 모두 TLS(NPM에서 종료), 내부 구간은 Proxmox 사설 LAN**, 애플리케이션 계층 인증은 구간마다 토큰·키·JWT로 나뉜다.
-- 한계: 사설 LAN 안의 NPM→게이트웨이는 평문 HTTP다. 데모용 IdP·STS는 HTTP. PoC는 KMS 대신 환경변수 Fernet 키를 쓴다(격차 목록은 `docs/key-security-design.md` 8절). 운영에서는 mTLS와 Vault(+ KMS 자동 언실)를 적용한다.
+- 한계: 사설 LAN 안의 NPM→게이트웨이는 평문 HTTP다. 데모용 IdP·STS는 HTTP. KMS 인증은 AWS 밖 서버라 장기 IAM 액세스 키를 쓴다. 남은 격차는 `docs/key-security-design.md` 8절. 향후 mTLS, IAM Roles Anywhere, Vault·감사 로그를 적용한다.
 
 ## 6. 배포 구조
 - **로컬 개발**: Mock 9000 + 게이트웨이 8000, SQLite 파일, `scripts/dev.ps1`.
 - **목표 구성(아키텍처 결정)**: **Nginx Proxy Manager(NPM)가 게이트웨이의 단일 진입점**이다. NPM이 TLS(`*.sio2.kr` 와일드카드)를 종료하고 `hack.sio2.kr`를 **Proxmox 위의 게이트웨이 서버(LXC CT)**로 프록시하며, `/live`만 같은 CT의 Mock(9000 계열 포트)으로 라우팅한다. CT 안에서는 게이트웨이(8000)·Mock·SQLite를 systemd로 구동하고, CT 방화벽은 NPM의 접근만 허용한다. 배포는 `pve-deploy` 절차(CT 생성 → 앱 배포 → NPM 프록시 + 인증서)를 따른다.
 - **현재 구동 상태(실제 적용됨)**: 위 목표 구성이 적용되어 있다. Proxmox CT 1003(`hack-gw`, 172.30.1.43)에서 게이트웨이(8000)·Mock(9000)을 systemd로 구동하고, NPM 프록시 호스트 18(`sio2.kr`, 인증서 9번 `sio2.kr`)이 `172.30.1.43:8000`으로, `/live`는 `:9000`으로 프록시한다. `hack.sio2.kr`는 NPM **리다이렉션 호스트**(301, 경로·쿼리 보존, 인증서 `*.sio2.kr`)로 `https://sio2.kr`에 연결한다. 환경파일 `/opt/november/.env.server`(공개 모드, `TRUSTED_PROXIES`=NPM 172.30.1.101, 실제 AI 키 없음). 재배포는 `scripts/deploy_test_server.sh 1003`. (이 PC + Tailscale 구동 방식은 중단되었다. `scripts/run_test_server.ps1`은 로컬 점검용으로만 남긴다.)
-- 환경변수: `PUBLIC_MODE`, `ADMIN_KEY`, `TRUSTED_PROXIES`, `DEMO_MODE`(기본 1, 로컬 IdP·`X-Demo-Source-IP`), `MOCK_BASE_URL`, `DB_PATH`, `VAULT_KEY`, `LEAKED_KEY`, `IDP_ISSUER`, `UPSTREAM_API_KEY`·`UPSTREAM_BASE_URL`(Mock 실제 AI 패스스루), `LIVE_MODEL`, `OPENROUTER_MANAGEMENT_KEY`, `OPENAI_ADMIN_KEY`·`OPENAI_PROJECT_ID`. 테스트 서버는 실제 키 3종(`UPSTREAM_API_KEY`·`OPENROUTER_MANAGEMENT_KEY`·`OPENAI_ADMIN_KEY`)을 지운 채 실행한다(Mock만).
+- 환경변수: `PUBLIC_MODE`, `ADMIN_KEY`, `TRUSTED_PROXIES`, `DEMO_MODE`(기본 1, 로컬 IdP·`X-Demo-Source-IP`), `MOCK_BASE_URL`, `DB_PATH`, `KEY_BACKEND`(`kms`|`fernet`, 서버=kms), `VAULT_KEY`(fernet용, 기본값 없음 — 로컬은 미설정 시 `data/.vault_key` 자동 생성, 서버는 필수), AWS 자격 증명(KMS 최소 권한 IAM 사용자, `.env.server` 권한 600), `LEAKED_KEY`, `IDP_ISSUER`, `UPSTREAM_API_KEY`·`UPSTREAM_BASE_URL`(Mock 실제 AI 패스스루), `LIVE_MODEL`, `OPENROUTER_MANAGEMENT_KEY`, `OPENAI_ADMIN_KEY`·`OPENAI_PROJECT_ID`. 테스트 서버는 실제 키 3종(`UPSTREAM_API_KEY`·`OPENROUTER_MANAGEMENT_KEY`·`OPENAI_ADMIN_KEY`)을 지운 채 실행한다(Mock만).
 
 ## 7. 그림 작성 가이드
-- **레이어**: 행위자 → (NPM) → 게이트웨이 앱(중계·탐지·관리) → 어댑터 → 공급자, 좌우로 저장소(DB·KMS·감사 로그·관리 키 저장소)를 둔다. **KMS와 봉투 암호화는 목표 구성이므로 PoC(Fernet, 환경변수 키)와 점선·색으로 구분**하고, 평면 분리(등록/사용/탐지)를 화살표로 드러낸다.
+- **레이어**: 행위자 → (NPM) → 게이트웨이 앱(중계·탐지·관리) → 어댑터 → 공급자, 좌우로 저장소(DB·KMS·감사 로그·관리 키 저장소)를 둔다. **KMS 봉투 암호화는 적용된 구성이므로 실선으로**, Vault·감사 로그·관리 키 별도 경로는 **향후 구성이므로 점선·회색으로** 구분한다.
 - **화살표 색 구분 권장**: 정상 호출(실선), 탐지 조회(파선), 공격 경로(빨강), 자동 폐기(굵은 선).
 - **강조할 것**: ① 공격자 경로가 게이트웨이를 우회한다 ② 탐지 워커가 공급자 값과 게이트웨이 기록을 **서로 다른 경로로** 얻어 비교한다 ③ 폐기·승격 후에도 사용자 경로는 끊기지 않는다.
 
@@ -263,13 +268,18 @@ sequenceDiagram
 - 다중 키 분할 관리(인당 1키, 테넌트별 KEK, 예비 키 풀, 과금 계량)는 `docs/multi-key-management-design.md` 참조. 공급자 API 키 보관 설계(봉투 암호화, KMS, 평면 분리, 현재 격차와 로드맵)는 `docs/key-security-design.md` 참조.
 
 ## 8. 한계와 운영 전환
-| PoC | 운영 |
+**적용됨(키 보관)**: AWS KMS 봉투 암호화(크레덴셜별 DEK, AES-256-GCM, 암호화 컨텍스트, `key_version`·`kek_id`), `VAULT_KEY` 고정 기본값 제거, `provider_ref` 해시화, DB·환경파일 권한 600/700, 키 값 로그·응답 마스킹, CloudTrail에 KMS 사용 기록.
+
+| 현재 | 남은 것(향후) |
 |---|---|
 | SQLite | Postgres 등 외부 DB, 이중화 |
-| Fernet 키를 환경변수로(고정 기본값 폴백) | **HashiCorp Vault**(KV v2, AppRole, 평면 분리 정책, 동적 시크릿) + **AWS KMS 자동 언실**, 감사 로그, 키 버전·교체 자동화, 가능하면 WIF |
+| KMS 인증은 장기 IAM 액세스 키(`.env.server` 600) | IAM Roles Anywhere 또는 AWS 안의 IAM 역할 |
+| 키 보관 = DB 암호문 + KMS | **HashiCorp Vault**(KV v2·Transit·동적 시크릿·AppRole), 테넌트별 KEK, 정기 키 교체 자동화 |
+| 앱 감사 로그 없음(KMS 호출만 CloudTrail) | append-only 감사 로그 저장소 |
+| 관리 키(OpenRouter Management·OpenAI Admin)가 환경변수, 중계와 같은 프로세스 | 별도 경로·탐지 워커 전용 신원 |
 | 단일 프로세스 워커 | 별도 워커·큐, 공급자별 폴링 격리 |
 | Mock/로컬 IdP | 실제 IdP(JWKS 캐시·키 교체) |
 | 고정 관리자 키 | SSO·역할 기반 접근 |
 | 서비스 단위 JWT 매핑(`sub`→서비스, 로컬 IdP) | **개인 사용자 WIF**: 회사 IdP SSO(PKCE·Device Code), `email`·`groups` 클레임 기반 사람 단위 귀속·모델·예산 정책, 오프보딩 즉시 반영 |
 | 공급자 지연만큼 탐지 지연 | 공급자 한도·알림과 병행, 지연을 사용자에게 명시 |
-- 게이트웨이 자체가 침해되면 키 사용 권한까지 노출될 수 있다. 키가 DB에 없고 Vault 정책으로 접근이 제한되며 짧은 캐시 TTL·사용 감사로 피해를 줄이고, 허니키와 사용량 대조로 침해를 탐지한다.
+- 게이트웨이 자체가 침해되면 키 사용 권한까지 노출될 수 있다. DB만 유출되면 KEK가 KMS에 있어 풀 수 없고, DEK 캐시는 10분으로 짧으며, KMS 사용은 CloudTrail에 남는다. 그 밖에는 허니키와 사용량 대조로 침해를 탐지한다.
