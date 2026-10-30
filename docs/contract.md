@@ -161,7 +161,7 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
   |---|---|---|---|---|---|
   | mock | 2 | 0.5 | requests, tokens, cost_usd | `POST /revoke` | 0.1/0.5/0.7 |
   | openrouter | 8 (실측 약 6초) | 20 | cost_usd | `PATCH /keys/{hash}` disabled (약 20초) | 0.05/0.2/0.35 |
-  | openai | 420 (실측 381초) | 3 | requests, tokens, 1분 buckets | 서비스 계정 삭제 (실측 2.8초) | 0.05/0.2/0.35 |
+  | openai | 420 (실측 95초·381초) | 3 | requests, tokens, 1분 buckets | 서비스 계정 삭제 (실측 2.8초) | 0.05/0.2/0.35 |
 - 판정(탐지기 `assess`): 전제 = 공급자 값은 항상 게이트웨이 기록보다 늦다.
   - 정렬 비교 `diff_calls`(대시보드 표시): buckets가 있으면 반영 완료 버킷(끝 ≤ now − lag_s)의 누적 호출 수 vs 같은 경계 이전 게이트웨이 호출 수(버킷 경계 정렬, 누적 비교라 분 경계 오차가 쌓이지 않음). requests만 있으면 스냅샷 vs now − lag_s까지의 게이트웨이. cost만(또는 tokens만) 있으면 차액 ÷ 1건 기대값으로 호출 수 추정(`calls_estimated: true`).
   - 확실 유출 `certain_diff_calls`: 공급자 누적 − 게이트웨이 **현재까지 전체** 누적(오차 3건 차감). 공급자가 늦으므로 양수면 무단 사용이 확실하다(오탐 없음).
@@ -201,3 +201,9 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
   `X-Demo-Source-IP`는 `DEMO_MODE`이고 (공개 모드가 아니거나 유효한 `X-Admin-Key`가 있을 때)만 인정. `/demo/honeypot/hit`는 내부 호출에 관리자 키를 붙인다.
 - `/demo/reset`은 `trusted_identity`도 지운다. WIF를 쓰려면 리셋 후 `POST /demo/wif/seed` 재실행. 응답에 `note` 필드로 안내.
 - 테스트 서버: `scripts/run_test_server.ps1`(origin/main → `C:\Users\tjrdu\novemberdeploy\src`, Gateway 8800·Mock 9800, Tailscale IP(또는 `BIND_IP`)에만 바인드, `.env` 미복사이고 `UPSTREAM_API_KEY`·`OPENROUTER_MANAGEMENT_KEY`·`OPENAI_ADMIN_KEY`를 지운 채 실행 → Mock 가짜 응답만, 실제 공급자 모드 불가, 키 `novemberdeploy\admin_key.txt`, `TRUSTED_PROXIES=100.69.18.101`(NPM)), 종료 `scripts/stop_test_server.ps1`.
+
+## L. OpenAI 실제 판별 검증 결과 (2026-10-31)
+- 실제 OpenAI로 end-to-end 확인: 직원 5건 + 청중 직접 10건 → 반영은 **95초**에 15건이 한꺼번에 보임(이전 단독 측정은 381초). 키 ID 필터 조회와 프로젝트 전체 `group_by=api_key_id` 조회가 같은 값이고, 호출은 K1 한 키에만 집계됨.
+- 탐지: 95초에 SUSPECT(확실 유출 7건 = 공급자 15 − 게이트웨이 5 − 오차 3, 한도 100 대비 7%). 420초 경과로 버킷이 확정되자 대시보드가 공급자 15 / 게이트웨이 5 / 차이 7을 표시. 한도를 20으로 낮추면 1초 만에 BREACH → 서비스 계정 삭제(약 3초) → 예비키 승격 → RECOVERED.
+- 한도 100에서는 청중 10건으로 SUSPECT까지만 간다. WARNING/BREACH 확인은 한도를 낮춘 상태에서만 했다.
+- 반영 지연은 편차가 크다(95초·381초). `lag_s=420`은 유지해도 오탐은 없고 탐지가 늦어질 수 있을 뿐이다.

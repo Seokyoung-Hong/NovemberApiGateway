@@ -46,7 +46,7 @@
 |---|---|---|---|---|
 | P1 | Mock | `/usage` | `/revoke` | 2초 / 즉시(어댑터 값 0.5초) |
 | P2 | OpenRouter | `GET /keys/{hash}` 사용액(USD) | `PATCH disabled` | 약 6초 / 약 20초 (호출 수 API는 당일 미지원) |
-| P3 | OpenAI | Usage API `num_model_requests` 1분 버킷 | 서비스 계정 삭제 | 수 분(381초 실측, 이후 측정 미확인) / 약 3초 |
+| P3 | OpenAI | Usage API `num_model_requests` 1분 버킷 | 서비스 계정 삭제 | 95~381초(실측 2회, 편차 큼) / 약 3초 |
 
 ## 3. 컴포넌트 다이어그램 (Mermaid)
 ```mermaid
