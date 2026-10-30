@@ -19,7 +19,7 @@ OPENAI_BASE_URL = "https://api.openai.com/v1"
 # M. vLLM(자체 GPU): 앞단 게이트웨이가 키별 계량·폐기 제공(docs/vllm-gateway-spec.md)
 VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://127.0.0.1:8100").rstrip("/")
 VLLM_ADMIN_KEY = os.getenv("VLLM_ADMIN_KEY", "")
-VLLM_MODEL = os.getenv("VLLM_MODEL", "google/gemma-4-E4B-it-qat-w4a16-ct")
+VLLM_MODEL = os.getenv("VLLM_MODEL", "google/gemma-4-E2B-it-qat-w4a16-ct")
 PROVIDERS = {"mock": MOCK_BASE_URL, "openrouter": OPENROUTER_BASE_URL, "openai": OPENAI_BASE_URL,
              "vllm": VLLM_BASE_URL}  # 공급자 이름 -> base_url
 ADMIN_KEY = os.getenv("ADMIN_KEY", "admin")  # X-Admin-Key (/admin/*, 공개 모드면 /demo/*·/idp/token도)
