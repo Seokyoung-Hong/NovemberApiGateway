@@ -255,7 +255,7 @@ sequenceDiagram
 - **구간 라벨**: 화살표마다 5-1절의 프로토콜(HTTPS/TLS, 사설 LAN HTTP, Bearer, JWT 등)을 짧게 표기한다.
 - **그림에 넣지 않을 것**: vLLM(자체 GPU) 구성(2-6절)은 해커톤 시연 전용이라 컴포넌트도·시퀀스도·배포도에 그리지 않는다.
 
-- 공급자 API 키 보관 설계(봉투 암호화, KMS, 평면 분리, 현재 격차와 로드맵)는 `docs/key-security-design.md` 참조.
+- 다중 키 분할 관리(인당 1키, 테넌트별 KEK, 예비 키 풀, 과금 계량)는 `docs/multi-key-management-design.md` 참조. 공급자 API 키 보관 설계(봉투 암호화, KMS, 평면 분리, 현재 격차와 로드맵)는 `docs/key-security-design.md` 참조.
 
 ## 8. 한계와 운영 전환
 | PoC | 운영 |

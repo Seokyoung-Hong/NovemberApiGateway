@@ -72,3 +72,4 @@
 | architecture.md | 다이어그램·표에 실제 기술명이 부족함 | 다이어그램 노드에 FastAPI·Uvicorn·httpx·cryptography·SQLite·Nginx Proxy Manager·Proxmox VE(LXC·systemd)·Let's Encrypt·AWS KMS/Vault·OpenAI/OpenRouter·Google/Entra/GitHub OIDC 등 기술명 병기, 2-7절 "기술 스택 한눈에" 표 추가 |
 | tech-stack-logos.md(신규) | 아키텍처 그림용 로고 출처 정리 없음 | 기술 약 34개의 로고 공식 출처 URL·형식·사용 조건·확인 여부 표와 컴포넌트-기술 대응표 작성(이미지 미포함). architecture.md 2-7절에서 링크 |
 | tech-stack-logos.md, architecture.md | 일부 로고(Let's Encrypt CC BY-NC, WireGuard 허락, Proxmox 조건)의 사용 가능 여부가 불명확 | 비상업 해커톤 발표용이라 전부 사용하기로 한 결정을 0절에 기록(표기 의무·변형 금지·오인 금지는 유지, 상업 전환 시 재검토) |
+| multi-key-management-design.md(신규) | 사업 모델(기본 10만원 + 키당 1만원)과 다중 키 분할 관리 설계 없음 | 키 구조별 탐지 품질, 분할·테넌트 격리·예비 키 풀, 수명 주기 자동화, 과금 계량, 데이터 모델 추가, 위험·결정 사항을 설계. architecture.md·key-security-design.md에서 링크 |
