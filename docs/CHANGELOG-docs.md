@@ -69,3 +69,4 @@
 | key-security-design.md(신규) | 공급자 API 키 보관 설계 문서 없음 | 위협 모델, 봉투 암호화 키 계층, 평면 분리, 런타임 규칙, 현재 PoC 격차 8건과 P1~P4 로드맵 작성. architecture.md에서 링크 |
 | architecture.md | 키 보관이 Vault(Fernet) 한 줄로만 표현됨 | 키 보관 설계 반영(코드는 PoC 그대로): 저장소 S2를 KMS/Vault Transit으로, S3 감사 로그·S4 관리 키 저장소 추가, 다이어그램·5절 신뢰 경계·5-1절 프로토콜 표(7,9,10,11행)·8절 전환 표 갱신 |
 | architecture.md | 개인 사용자(사람) 대상 WIF가 아키텍처에 없었음 | 행위자 U6·IdP 확장, G3 설명, 다이어그램(U6 SSO 로그인·토큰 호출), 4-3-1 개인 사용자 WIF 시퀀스, 5절 신뢰 경계 3-2, 5-1절 12행, 8절 전환 표, 그림 가이드 갱신. PoC는 서비스 단위 `sub` 매핑까지임을 명시 |
+| architecture.md | 다이어그램·표에 실제 기술명이 부족함 | 다이어그램 노드에 FastAPI·Uvicorn·httpx·cryptography·SQLite·Nginx Proxy Manager·Proxmox VE(LXC·systemd)·Let's Encrypt·AWS KMS/Vault·OpenAI/OpenRouter·Google/Entra/GitHub OIDC 등 기술명 병기, 2-7절 "기술 스택 한눈에" 표 추가 |

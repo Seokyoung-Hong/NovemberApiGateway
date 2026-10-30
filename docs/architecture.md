@@ -54,40 +54,57 @@
 ### 2-6. 해커톤 데모 전용 구성 (아키텍처 그림에서 제외)
 - **vLLM(자체 GPU)**: 앞단 게이트웨이가 키별 계량·폐기를 제공하는 자체 호스팅 공급자(`vllm` 어댑터, `/demo/reset-vllm`). 해커톤 데모 전용 구성이다. 실제 시스템 아키텍처 그림에는 포함하지 않는다. 실제 공급자 대신 무료 GPU로 청중 라이브·공격 시뮬레이터를 돌리기 위한 시연용이며, 인터페이스는 `docs/vllm-gateway-spec.md`에 있고, 숙소 쪽 NPM이 `https://vllm.dorm.sio2.kr`로 TLS 종료해 서비스한다.
 
+### 2-7. 기술 스택 한눈에
+| 계층 | 기술 | 용도 |
+|---|---|---|
+| 언어·런타임 | **Python 3**, **Uvicorn**(ASGI 서버), `asyncio` | 게이트웨이·Mock 구동, 백그라운드 탐지 워커 |
+| 웹 프레임워크 | **FastAPI**(+ Pydantic) | 중계·관리·대시보드·사용량 API, 테스트 페이지 서빙 |
+| HTTP 클라이언트 | **httpx** | 공급자 중계(스트리밍 포함), 사용량 조회·폐기 호출, JWKS 조회 |
+| 암호·토큰 | Python **cryptography**(Fernet, RSA/RS256 검증), **JWT**, **OIDC / OAuth 2.0**(PKCE, Device Authorization Grant) | 키 암호화(PoC), 사용자·워크로드 WIF 토큰 검증 |
+| 저장소 | **SQLite**(PoC) → **PostgreSQL**(운영) | 사용량 로그, 크레덴셜(암호문), 사고·이벤트 |
+| 키 관리(목표) | **AWS KMS** 또는 **HashiCorp Vault**(Transit·KV), 비밀 저장소(AWS Secrets Manager 등) | KEK·봉투 암호화, 관리 키 보관 |
+| 진입점·TLS | **Nginx Proxy Manager**(Nginx), **Let's Encrypt** 와일드카드 인증서 | TLS 종료, 도메인 라우팅, `/live` 경로 분기 |
+| 서버·가상화 | **Proxmox VE**, **LXC**(Ubuntu 24.04), **systemd** | 게이트웨이 CT 구동·자동 재시작 |
+| 네트워크(임시/보조) | **Tailscale**(**WireGuard**) | 이전 임시 구성에서 사용, 현재 목표 구성은 Proxmox 사설 LAN |
+| 신원 제공자 | **Google Workspace**, **Microsoft Entra ID**, **GitHub Actions OIDC** | 사람·워크로드 OIDC 토큰 발급 |
+| AI 공급자 | **OpenAI API**, **OpenRouter API** | 모델 호출, 키별 사용량·폐기 API |
+| 문서·도구 | **Mermaid**, Markdown, **Git/GitHub** | 다이어그램·문서·형상 관리 |
+- 로고 출처와 사용 조건은 `docs/tech-stack-logos.md`(조사 중)에 정리한다. 해커톤 데모 전용 구성(vLLM)은 이 표와 아키텍처 그림에서 제외한다.
+
 ## 3. 컴포넌트 다이어그램 (Mermaid)
 ```mermaid
 flowchart LR
     subgraph NET["인터넷 (공개 구간)"]
-        U1["사용자 클라이언트"]
-        U2["대표/관리자"]
+        U1["사용자 클라이언트<br/>OpenAI SDK · curl · CI"]
+        U2["대표/관리자<br/>웹 UI"]
         U3["청중 / 공격자"]
-        U4["회사 IdP (OIDC / SSO)"]
+        U4["회사 IdP (OIDC)<br/>Google Workspace · Microsoft Entra ID<br/>GitHub Actions OIDC"]
         U6["개인 사용자 (사람)<br/>브라우저 · CLI · IDE"]
-        P2["OpenRouter"]
-        P3["OpenAI"]
+        P2["OpenRouter API"]
+        P3["OpenAI API"]
     end
 
-    NPM["NPM hack.sio2.kr<br/>TLS 종료 · HTTPS 강제"]
+    NPM["Nginx Proxy Manager (Nginx)<br/>hack.sio2.kr · TLS 종료 · Let's Encrypt"]
 
-    subgraph PVE["Proxmox 서버 (집 사설 LAN) - 게이트웨이 CT"]
-        subgraph GW["게이트웨이 앱 - FastAPI"]
-            G1["중계 · 접근통제<br/>허니키 → IP → 토큰/WIF → 서비스"]
-            G3["WIF 검증<br/>JWT RS256 · 신뢰 규칙"]
+    subgraph PVE["Proxmox VE (집 사설 LAN) - LXC CT: Ubuntu 24.04 · systemd"]
+        subgraph GW["게이트웨이 앱 - Python · FastAPI · Uvicorn"]
+            G1["중계 · 접근통제 (FastAPI + httpx)<br/>허니키 → IP → 토큰/WIF → 서비스"]
+            G3["WIF 검증 (python cryptography)<br/>JWT RS256 · 신뢰 규칙"]
             G2["관리자 API"]
-            D1["탐지 · 대응 워커<br/>2초 주기"]
+            D1["탐지 · 대응 워커<br/>asyncio 태스크 · 2초 주기"]
             D2["대시보드 · 데모 제어"]
             U5["사용량 집계 · 예측"]
-            G4["공급자 어댑터"]
+            G4["공급자 어댑터 (httpx)"]
             T1["테스트 페이지 /test"]
         end
-        subgraph MK["Mock Provider"]
+        subgraph MK["Mock Provider - FastAPI"]
             M1["가짜 공급자<br/>사용량 · 폐기 · STS"]
             M2["청중 라이브 /live"]
         end
-        S1[("DB<br/>암호문 + 감싼 DEK")]
-        S2["KMS / Vault Transit<br/>KEK 반출 불가 - PoC: Fernet"]
-        S3[("감사 로그<br/>append-only")]
-        S4["관리 키 저장소<br/>Management/Admin 키"]
+        S1[("SQLite (운영: PostgreSQL)<br/>암호문 + 감싼 DEK")]
+        S2["AWS KMS 또는 HashiCorp Vault Transit<br/>KEK 반출 불가 - PoC: Fernet (cryptography)"]
+        S3[("감사 로그 append-only<br/>예: AWS CloudTrail · Grafana Loki")]
+        S4["관리 키 저장소<br/>예: AWS Secrets Manager · Vault KV"]
     end
 
     U1 -- "HTTPS + Bearer 토큰 또는 JWT" --> NPM
