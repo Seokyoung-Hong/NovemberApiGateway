@@ -73,3 +73,12 @@ aws login --profile default            # 세션 만료 시
 ## 7. 한계
 - Windows에서는 `.vault_key` 권한 600이 적용되지 않는다(Linux 서버에서는 600).
 - KEK 교체는 KMS 내부에서 처리되므로 저장된 wrapped DEK는 그대로 복호화된다. 형식 버전(`1`)은 저장 형식이 바뀔 때만 올린다.
+
+## 8. 운영 반영 기록(2026-10-31)
+- 대상: 실서버(Proxmox CT 1003, https://sio2.kr), 배포 커밋 `d1ed50d`.
+- AWS(리전 ap-northeast-2): KMS 대칭 키 `alias/november-gateway-kek`(설명 `NovemberGateway KEK`, 연 1회 자동 교체), IAM 사용자 `november-gateway-kms`(콘솔 로그인 없음).
+- 인라인 정책 `NovemberGatewayKmsEnvelope`: 위 키 하나에만 `kms:GenerateDataKey`·`kms:Decrypt`, 조건 `aws:RequestedRegion=ap-northeast-2` + 암호화 컨텍스트(`app=november`, `purpose=provider-api-key`). 컨텍스트 없는 호출은 거부됨을 확인.
+- 서버 `.env.server`(600)에 `VAULT_KEY`(무작위)·`KMS_KEY_ID`·`AWS_REGION`·IAM 사용자 액세스 키·`KEY_BACKEND=kms` 추가. 루트 자격 없음 확인.
+- `rekey_credentials.py --to kms`: 총 2, 변환 2, 실패 0. 이후 `/demo/reset`으로 만든 행도 `v2:kms:`.
+- 롤백: `.env.server`에서 `KEY_BACKEND` 제거 → `rekey_credentials.py --to fernet` → `systemctl restart november-gateway`. 또는 `/opt/november`의 `*.bak-prekms-*`(DB·환경)와 `src-*.tgz` 복원.
+- 남은 일: `VAULT_KEY_LEGACY`를 무작위 값으로 설정해 구 기본 키 무력화(4절 5).
