@@ -78,5 +78,23 @@
 - `GET /live/config` → `{key, model}`
 - `POST /live/chat` `{key, message}` → 200 `{reply, status:200}` / 401 `{error:"revoked"}` / 429 `{error:"rate_limited"}`. 제한: 메시지 300자, max_tokens 150, 모델 고정, IP당 20초 10회(X-Forwarded-For 우선).
 - `GET /live/stats` → `{participants, calls, key_status:"active"|"revoked", updated_at}` (슬라이드·대시보드 표시용)
-- 환경변수: `UPSTREAM_API_KEY`, `UPSTREAM_BASE_URL`(기본 OpenRouter), `LIVE_MODEL`(기본 `gpt-4o-mini`; OpenRouter는 `openai/gpt-4o-mini`가 필요할 수 있음), `LEAKED_KEY`.
+- 환경변수: `UPSTREAM_API_KEY`, `UPSTREAM_BASE_URL`(기본 OpenRouter), `LIVE_MODEL`(기본 `openai/gpt-4o-mini`), `LEAKED_KEY`.
 - 실측(청중 40명 가정, 초당 약 6.5건): 한도 100호출에서 78건에 BLOCKED, 청중 401, 최종 손실 94건. 청중이 더 빠르면 한도를 넘길 수 있으니 한도 여유를 두거나 속도 제한을 유지할 것.
+
+## G. OpenRouter 라이브 모드
+Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준다. 게이트웨이 `.env`에 `OPENROUTER_MANAGEMENT_KEY`(관리 키) 필요(`app/contract.py`가 `.env`를 직접 읽음). 공급자 분기는 `app/providers.py`.
+- 관리 키로만 키를 만들고·비활성화하고·지운다. **이름이 `november-`로 시작하는 키만** 다룬다(다른 키는 건드리지 않음).
+- `POST /admin/openrouter/provision` `{role:"PRIMARY"|"STANDBY", limit_usd?:0.5}` → `{id, masked, role, hash_masked, leaked_key?}`.
+  `november-<role>-<랜덤>` 키 생성(한도 limit_usd), vault 암호화 저장, credential(`provider='openrouter'`, `auth_mode='API_KEY'`, `provider_ref`=OpenRouter 키 hash).
+  원문은 PRIMARY일 때만 `leaked_key`로 1회 반환하고 `data/live_key.json`(gitignore)에도 저장 → Mock `/live/config`가 그 키를 쓴다. ACTIVE PRIMARY가 이미 있으면 400. `POST /admin/credentials`에 `provider:"openrouter"`는 400.
+- `POST /demo/reset-openrouter` → `/demo/reset`과 같은 시드(CIDR·직원A/B 토큰·허니키·`loss_limit_krw`)에 기존 `november-` 키 삭제 후 K1(PRIMARY)·S1(STANDBY) 각 $0.5를 새로 만들어 넣는다. `unauthorized_call_limit`=500(`OPENROUTER_LIMIT_CALLS`). 응답 = reset 응답 + `leaked_key`.
+  `POST /demo/reset`(Mock 모드)은 `data/live_key.json`을 지워 라이브 페이지를 `LEAKED_KEY`로 되돌린다(OpenRouter 키는 지우지 않음).
+- `POST /demo/cleanup-openrouter` → `{deleted:n}`. `november-` 키(비활성 포함)만 삭제.
+- 중계: PRIMARY·ACTIVE 크레덴셜의 provider로 분기(이제 provider 필터 없음). OpenRouter면 `https://openrouter.ai/api/v1/chat/completions`, `model`은 그대로(없거나 `mock`/`demo`로 시작하면 `openai/gpt-4o-mini`), 본문에 `usage:{include:true}`를 넣어 응답 `usage.cost`(USD)로 `usage_log.cost_krw = USD × USD_TO_KRW(1400)`. 스트리밍은 마지막 청크 usage, cost가 없으면 gpt-4o-mini 단가로 토큰 추정.
+- 탐지: 워커가 `GET /keys/{hash}`(관리 키)의 `data.usage`(USD)×1400을 `provider_usage.cost_krw`로 적재. OpenRouter는 호출 수를 주지 않으므로(`/activity`는 당일 미지원) **호출 수는 추정**:
+  `provider_calls(추정) = gateway_calls + round((공급자 비용 − 같은 시점 게이트웨이 비용) / 호출당 평균 비용)`, 평균 = 해당 크레덴셜 `usage_log` 평균(이력 없으면 `DEFAULT_CALL_COST_USD`=0.00005×1400). 게이트웨이 쪽은 `스냅샷 − OPENROUTER_USAGE_LAG_S(8)`까지만 센다. `diff_calls = effective_calls_diff(...)`(오차 3건 차감)는 Mock과 같다.
+  이 추정값이 `provider_usage.requests`에 저장되므로 대시보드·시계열·사고의 `provider_calls`/`loss_calls`는 추정치다. `/admin/dashboard`의 `credentials[]`와 `/admin/incidents/{id}`에 `calls_estimated: true`(OpenRouter) 추가.
+  비율 상한은 공급자별 `RATIOS`: Mock 0.1/0.5/0.7, OpenRouter **0.05/0.2/0.35**(지연이 커서 낮춤). 대시보드 `warn_at_*`/`block_at_*`는 현재 PRIMARY의 provider 비율.
+- 폐기: `PATCH /keys/{hash}` `{disabled:true}`. 타임라인 REVOKE_PROVIDER_KEY 상세에 "공급자 반영까지 약 20초 소요". 승격·사고·이벤트는 Mock과 같다. VERIFIED는 승격 키로 OpenRouter 실제 호출 1건(`max_tokens=1`). 최종 손실 재계산은 폐기 28초 후(`OPENROUTER_REVOKE_LAG_S` 20 + 8).
+- 지연 특성(실측): 사용액 반영 약 6초, 비활성화 후 401까지 최대 약 20초(그 사이 호출은 200). 그래서 탐지까지 수십 초, 손실은 차단선을 넘을 수 있다. 금액 참고값(`diff_krw`)은 `TOLERANCE_KRW`(5,000원)보다 작아 보통 0으로 보인다.
+- 라이브(Mock `/live/chat`): 키가 `sk-or-`로 시작하면 **현재 공개한 키(`/live/config`)와 같을 때만** OpenRouter에 직접 전달(`LIVE_MODEL` 기본 `openai/gpt-4o-mini`, `max_tokens` 150, 기존 속도 제한 유지). OpenRouter 401/403 → 401 `{"error":"revoked"}`, 그 외 오류 → 502 `{"error":"upstream_error","upstream_status"}`. `/live/stats`의 `key_status`는 마지막 OpenRouter 응답이 401/403이면 `revoked`. Mock 키 경로는 그대로.

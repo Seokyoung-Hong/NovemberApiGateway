@@ -10,15 +10,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from app.contract import LEAKED_KEY, MOCK_USAGE_LAG_S, WIF_TOKEN_TTL_S, cost_krw
-
-# .env 직접 파싱(이미 설정된 환경변수 우선)
-_env = Path(__file__).resolve().parents[2] / ".env"
-if _env.exists():
-    for _l in _env.read_text(encoding="utf-8").splitlines():
-        _k, _, _v = _l.strip().partition("=")
-        if _k and not _k.startswith("#") and _v:
-            os.environ.setdefault(_k.strip(), _v.strip().strip("\"'"))
+from app.contract import (LEAKED_KEY, LIVE_KEY_PATH, MOCK_USAGE_LAG_S, OPENROUTER_BASE_URL, OPENROUTER_MODEL,
+                          WIF_TOKEN_TTL_S, cost_krw)  # contract import 시 .env 로드
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -28,11 +21,12 @@ revoked: set[str] = set()
 sts: dict[str, tuple[str, float]] = {}  # 토큰 -> (owner, 만료 epoch)
 live_hits: dict[str, list[float]] = {}  # IP -> 최근 /live/chat 시각
 live_calls = 0
+live_or_status = None  # OpenRouter 모드: 마지막 OpenRouter 응답 코드(401/403이면 key_status=revoked)
 
 
 def _reset():
-    global live_calls
-    reqs.clear(); revoked.clear(); sts.clear(); live_hits.clear(); live_calls = 0
+    global live_calls, live_or_status
+    reqs.clear(); revoked.clear(); sts.clear(); live_hits.clear(); live_calls = 0; live_or_status = None
 
 
 def _owner(key: str):
@@ -151,7 +145,7 @@ async def sts_token(request: Request):
     return {"token": tok, "expires_in": WIF_TOKEN_TTL_S, "owner": owner}
 
 
-LIVE_MODEL = os.getenv("LIVE_MODEL", "gpt-4o-mini")
+LIVE_MODEL = os.getenv("LIVE_MODEL", OPENROUTER_MODEL)
 LIVE_HTML = Path(__file__).with_name("live.html")
 
 
@@ -160,9 +154,37 @@ def live_page():
     return FileResponse(LIVE_HTML)
 
 
+def _live_key() -> str:
+    """OpenRouter 모드면 게이트웨이가 프로비저닝한 PRIMARY 키(data/live_key.json), 아니면 LEAKED_KEY."""
+    try:
+        return json.loads(Path(LIVE_KEY_PATH).read_text(encoding="utf-8"))["key"]
+    except (OSError, ValueError, KeyError):
+        return LEAKED_KEY
+
+
 @app.get("/live/config")
 def live_config():
-    return {"key": LEAKED_KEY, "model": LIVE_MODEL}
+    return {"key": _live_key(), "model": LIVE_MODEL}
+
+
+async def _live_openrouter(key: str, msg: str):
+    """청중 호출을 OpenRouter에 직접 전달(게이트웨이를 거치지 않음 = 유출 키 직접 사용)."""
+    global live_calls, live_or_status
+    if key != _live_key():  # 열린 프록시가 되지 않게 지금 공개한 키만 허용
+        return _revoked()
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(f"{OPENROUTER_BASE_URL}/chat/completions", headers={"Authorization": f"Bearer {key}"},
+                             json={"model": LIVE_MODEL, "max_tokens": 150, "messages": [{"role": "user", "content": msg}]})
+    except httpx.HTTPError:
+        return JSONResponse({"error": "upstream_error"}, status_code=502)
+    live_or_status = r.status_code
+    if r.status_code in (401, 403):
+        return _revoked()
+    if r.status_code != 200:
+        return JSONResponse({"error": "upstream_error", "upstream_status": r.status_code}, status_code=502)
+    live_calls += 1
+    return {"reply": r.json()["choices"][0]["message"]["content"], "status": 200}
 
 
 @app.post("/live/chat")
@@ -176,21 +198,28 @@ async def live_chat(request: Request):
         return JSONResponse({"error": "rate_limited"}, status_code=429)
     hits.append(now)
     body = await request.json()
-    owner = _owner(str(body.get("key", "")).strip())
+    key, msg = str(body.get("key", "")).strip(), str(body.get("message", ""))[:300]
+    if key.startswith("sk-or-"):
+        return await _live_openrouter(key, msg)
+    owner = _owner(key)
     if owner is None:
         return _revoked()
-    msg = str(body.get("message", ""))[:300]
     d = await _complete(owner, {"model": LIVE_MODEL, "max_tokens": 150,
                                 "messages": [{"role": "user", "content": msg}]})
     live_calls += 1
     return {"reply": d["choices"][0]["message"]["content"], "status": 200}
 
 
+def _live_revoked() -> bool:
+    key = _live_key()
+    return live_or_status in (401, 403) if key.startswith("sk-or-") else key in revoked
+
+
 @app.get("/live/stats")
 def live_stats():
     now = time.time()
     return {"participants": sum(any(t > now - 600 for t in h) for h in live_hits.values()),
-            "calls": live_calls, "key_status": "revoked" if LEAKED_KEY in revoked else "active",
+            "calls": live_calls, "key_status": "revoked" if _live_revoked() else "active",
             "updated_at": int(now)}
 
 

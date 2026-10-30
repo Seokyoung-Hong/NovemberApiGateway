@@ -1,6 +1,7 @@
 """탐지·대응 워커, 대시보드 API, 데모 공격/리셋 (계약 D절)."""
 import asyncio
 import json
+import os
 import secrets
 import time
 from datetime import datetime, timezone
@@ -8,12 +9,13 @@ from datetime import datetime, timezone
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
-from app import vault
-from app.contract import (ADMIN_KEY, ATTACK_MAX_TOKENS, ATTACK_RPS, BLOCK_RATIO, DEFAULT_LIMIT_CALLS,
-                          LEAKED_KEY, MOCK_USAGE_LAG_S, POLL_INTERVAL_S, PROVIDERS, WARN_RATIO,
+from app import providers, vault
+from app.contract import (ADMIN_KEY, ATTACK_MAX_TOKENS, ATTACK_RPS, DEFAULT_CALL_COST_USD, DEFAULT_LIMIT_CALLS,
+                          LEAKED_KEY, LIVE_KEY_PATH, MOCK_USAGE_LAG_S, OPENROUTER_LIMIT_CALLS, OPENROUTER_MODEL,
+                          OPENROUTER_REVOKE_LAG_S, POLL_INTERVAL_S, PROVIDERS, RATIOS, USAGE_LAG_S, USD_TO_KRW,
                           effective_calls_diff, effective_diff, hash_token, judge, mask_key)
 from app.db import get_conn
-from app.gateway.router import _wif_cache, blocked_ips, reset_gen
+from app.gateway.router import _wif_cache, blocked_ips, insert_openrouter_cred, reset_gen
 
 MOCK = PROVIDERS["mock"]
 router = APIRouter()
@@ -46,15 +48,34 @@ def limit_calls(c) -> int:
     return int(r[0]) if r else DEFAULT_LIMIT_CALLS
 
 
-def calls(c, cid):
+def calls(c, cred):
     """(gateway 호출 수, provider 최신 스냅샷 호출 수). gateway는 공급자 집계와 같은 시점까지만 센다
-    (usage_log 중 at <= 스냅샷 시각 - MOCK_USAGE_LAG_S). 안 맞추면 직원 호출이 차액을 깎아 판정이 출렁인다."""
-    p = c.execute("SELECT requests,at FROM provider_usage WHERE credential_id=? ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+    (usage_log 중 at <= 스냅샷 시각 - 공급자별 USAGE_LAG_S). 안 맞추면 직원 호출이 차액을 깎아 판정이 출렁인다."""
+    p = c.execute("SELECT requests,at FROM provider_usage WHERE credential_id=? ORDER BY id DESC LIMIT 1",
+                  (cred["id"],)).fetchone()
     if not p:
         return 0, 0
     g = c.execute("SELECT COUNT(*) FROM usage_log WHERE credential_id=? AND at<=?",
-                  (cid, p["at"] - MOCK_USAGE_LAG_S)).fetchone()[0]
+                  (cred["id"], p["at"] - USAGE_LAG_S[cred["provider"]])).fetchone()[0]
     return g, p["requests"]
+
+
+def snapshot(c, cred, u):
+    """provider_usage 1행. OpenRouter는 호출 수를 안 주므로 추정해서 requests에 넣는다:
+    게이트웨이 호출 수 + (공급자 비용 - 같은 시점까지의 게이트웨이 비용) / 호출당 평균 비용."""
+    now, req = time.time(), u["requests"]
+    if req is None:
+        gc, gk = c.execute("SELECT COUNT(*),COALESCE(SUM(cost_krw),0) FROM usage_log WHERE credential_id=? AND at<=?",
+                           (cred["id"], now - USAGE_LAG_S[cred["provider"]])).fetchone()
+        avg = c.execute("SELECT AVG(cost_krw) FROM usage_log WHERE credential_id=? AND cost_krw>0",
+                        (cred["id"],)).fetchone()[0] or DEFAULT_CALL_COST_USD * USD_TO_KRW
+        req = gc + max(0, round((u["cost_krw"] - gk) / avg))
+    c.execute("INSERT INTO provider_usage(credential_id,cost_krw,tokens,requests,at) VALUES(?,?,?,?,?)",
+              (cred["id"], u["cost_krw"], u["tokens"], req, now))
+
+
+def ratios(provider):
+    return RATIOS.get(provider, RATIOS["mock"])
 
 
 def event(c, kind, message, data=None):
@@ -93,19 +114,19 @@ async def tick(http):
     with get_conn() as c:
         creds = c.execute("SELECT * FROM credential WHERE status='ACTIVE' ORDER BY id").fetchall()
     for cred in creds:
-        u = (await http.get(f"{MOCK}/usage", params={"owner": cred["provider_ref"]})).json()
+        u = await providers.usage(http, cred)
         with get_conn() as c:
-            c.execute("INSERT INTO provider_usage(credential_id,cost_krw,tokens,requests,at) VALUES(?,?,?,?,?)",
-                      (cred["id"], u["cost_krw"], u["tokens"], u.get("requests", 0), time.time()))
-            gc, pc = calls(c, cred["id"])
+            snapshot(c, cred, u)
+            gc, pc = calls(c, cred)
             diff, lim = effective_calls_diff(pc, gc), limit_calls(c)
             g, p = costs(c, cred["id"])
             krw = (effective_diff(p, g), limit_krw(c))  # 참고 표시용
-            v = judge(diff, lim)
+            v = judge(diff, lim, ratios(cred["provider"]))
             prev = state["judged"].get(cred["id"], "NORMAL")
             state["judged"][cred["id"]] = v
+            est = "(추정)" if u["requests"] is None else ""
             if v in ("SUSPECT", "WARNING") and v != prev:
-                event(c, v, f"{cred['masked']} 설명되지 않는 호출 {diff}건 ({diff / lim:.0%}, 참고 {krw[0]:,.0f}원)",
+                event(c, v, f"{cred['masked']} 설명되지 않는 호출 {diff}건{est} ({diff / lim:.0%}, 참고 {krw[0]:,.0f}원)",
                       {"credential_id": cred["id"], "diff_calls": diff, "diff_krw": krw[0]})
         if v == "BREACH":
             await respond(http, cred, diff, lim, *krw)
@@ -129,13 +150,18 @@ async def respond(http, cred, diff, lim, diff_krw, lim_krw):
         if c.execute("SELECT 1 FROM incident WHERE credential_id=?", (cred["id"],)).fetchone():
             return
         tl = [{"at": iso(time.time()), "step": "DETECTED", "ok": True,
-               "detail": f"설명되지 않는 호출 {diff}건 ≥ 차단선 {lim * BLOCK_RATIO:g}건 (참고 {diff_krw:,.0f}원)"}]
+               "detail": f"설명되지 않는 호출 {diff}건{'(추정)' if cred['provider'] == 'openrouter' else ''}"
+                         f" ≥ 차단선 {lim * ratios(cred['provider'])[2]:g}건 (참고 {diff_krw:,.0f}원)"}]
         iid = c.execute("INSERT INTO incident(credential_id,status,detected_at,loss_krw,limit_krw,loss_calls,limit_calls,"
                         "timeline) VALUES(?,?,?,?,?,?,?,?)", (cred["id"], "OPEN", time.time(), diff_krw, lim_krw, diff,
                                                               lim, json.dumps(tl))).lastrowid
-    r = await http.post(f"{MOCK}/revoke", json={"owner": cred["provider_ref"]})
-    tl.append({"at": iso(time.time()), "step": "REVOKE_PROVIDER_KEY", "detail": f"{cred['masked']} 공급자 폐기",
-               "ok": r.status_code == 200})
+    try:
+        ok = await providers.revoke(http, cred)
+    except httpx.HTTPError:
+        ok = False
+    lag = f", 공급자 반영까지 약 {OPENROUTER_REVOKE_LAG_S}초 소요" if cred["provider"] == "openrouter" else ""
+    tl.append({"at": iso(time.time()), "step": "REVOKE_PROVIDER_KEY", "detail": f"{cred['masked']} 공급자 폐기{lag}",
+               "ok": ok})
     with get_conn() as c:  # 폐기·승격은 즉시 DB 반영(직원 호출 503 방지)
         c.execute("UPDATE credential SET status='REVOKED' WHERE id=?", (cred["id"],))
         sb = c.execute("SELECT * FROM credential WHERE provider=? AND role='STANDBY' AND status='ACTIVE' "
@@ -172,10 +198,13 @@ async def recover(cred, iid, tl, diff, lim, sb):
 
     await asyncio.sleep(STEP_DELAY_S)
     try:
-        async with httpx.AsyncClient(timeout=5) as http:
+        async with httpx.AsyncClient(timeout=15) as http:
             key = await bearer(http, sb)
-            v = await http.post(f"{MOCK}/v1/chat/completions", headers={"Authorization": f"Bearer {key}"},
-                                json={"model": "mock", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1})
+            orr = sb["provider"] == "openrouter"  # OpenRouter는 실제 호출 1건(max_tokens=1)
+            v = await http.post(f"{PROVIDERS['openrouter']}/chat/completions" if orr else f"{MOCK}/v1/chat/completions",
+                                headers={"Authorization": f"Bearer {key}"},
+                                json={"model": OPENROUTER_MODEL if orr else "mock",
+                                      "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1})
         ok = v.status_code == 200
     except Exception:
         ok = False
@@ -190,16 +219,17 @@ async def recover(cred, iid, tl, diff, lim, sb):
 
 async def final_loss(cred, iid):
     """폐기 후 집계 지연이 지나면 최종 손실(공급자-게이트웨이)로 갱신."""
-    await asyncio.sleep(MOCK_USAGE_LAG_S + 0.5)
-    async with httpx.AsyncClient(timeout=5) as http:
-        u = (await http.get(f"{MOCK}/usage", params={"owner": cred["provider_ref"]})).json()
+    # OpenRouter: 폐기 반영(약 20초) 동안 들어온 호출까지 집계되도록 더 기다린다
+    await asyncio.sleep(OPENROUTER_REVOKE_LAG_S + USAGE_LAG_S["openrouter"] if cred["provider"] == "openrouter"
+                        else MOCK_USAGE_LAG_S + 0.5)
+    async with httpx.AsyncClient(timeout=10) as http:
+        u = await providers.usage(http, cred)
     with get_conn() as c:
         g, _ = costs(c, cred["id"])
-        c.execute("INSERT INTO provider_usage(credential_id,cost_krw,tokens,requests,at) VALUES(?,?,?,?,?)",
-                  (cred["id"], u["cost_krw"], u["tokens"], u.get("requests", 0), time.time()))
-        gc, _ = calls(c, cred["id"])
+        snapshot(c, cred, u)
+        gc, pc = calls(c, cred)
         c.execute("UPDATE incident SET loss_krw=?, loss_calls=? WHERE id=?",
-                  (max(0.0, u["cost_krw"] - g), max(0, u.get("requests", 0) - gc), iid))
+                  (max(0.0, u["cost_krw"] - g), max(0, pc - gc), iid))
 
 
 # ---------------- 대시보드 ----------------
@@ -211,14 +241,15 @@ def dashboard():
         order = ["NORMAL", "SUSPECT", "WARNING", "BREACH"]
         for cr in c.execute("SELECT * FROM credential ORDER BY id").fetchall():
             g, p = costs(c, cr["id"])
-            gc, pc = calls(c, cr["id"])
+            gc, pc = calls(c, cr)
             d, dc = effective_diff(p, g), effective_calls_diff(pc, gc)
             gt, pt, dt, gct, pct, dct = gt + g, pt + p, dt + d, gct + gc, pct + pc, dct + dc
             if cr["status"] == "ACTIVE":
-                worst = max(worst, judge(dc, lc), key=order.index)
+                worst = max(worst, judge(dc, lc, ratios(cr["provider"])), key=order.index)
             rows.append({k: cr[k] for k in ("id", "provider", "auth_mode", "role", "status", "masked")}
                         | {"gateway_cost_krw": g, "provider_cost_krw": p, "diff_krw": d,
-                           "gateway_calls": gc, "provider_calls": pc, "diff_calls": dc})
+                           "gateway_calls": gc, "provider_calls": pc, "diff_calls": dc,
+                           "calls_estimated": cr["provider"] == "openrouter"})
         inc = c.execute("SELECT * FROM incident WHERE trigger_type!='HONEYKEY' ORDER BY id DESC LIMIT 1").fetchone()
         status = "WARNING" if worst == "BREACH" else worst  # BREACH는 워커가 곧 BLOCKED로 바꾼다
         if inc and inc["status"] != "RESOLVED":
@@ -231,9 +262,10 @@ def dashboard():
             "ORDER BY e.id DESC LIMIT 5")]
         act = c.execute("SELECT id,provider,auth_mode,masked FROM credential "
                         "WHERE role='PRIMARY' AND status='ACTIVE' ORDER BY id LIMIT 1").fetchone()
-    return {"status": status, "limit_krw": lim, "warn_at_krw": lim * WARN_RATIO, "block_at_krw": lim * BLOCK_RATIO,
+    _, warn_r, block_r = ratios(act["provider"] if act else "mock")
+    return {"status": status, "limit_krw": lim, "warn_at_krw": lim * warn_r, "block_at_krw": lim * block_r,
             "diff_krw": dt, "gateway_cost_krw": gt, "provider_cost_krw": pt,
-            "limit_calls": lc, "warn_at_calls": lc * WARN_RATIO, "block_at_calls": lc * BLOCK_RATIO,
+            "limit_calls": lc, "warn_at_calls": lc * warn_r, "block_at_calls": lc * block_r,
             "diff_calls": dct, "gateway_calls": gct, "provider_calls": pct,
             "active_credential": dict(act) if act else None, "credentials": rows,
             "attack_running": attack_running(), "incident_id": inc["id"] if inc and status in ("BLOCKED", "RECOVERED") else None,
@@ -263,7 +295,9 @@ def timeseries(range: int = 300):
 
 def incident_json(c, r):
     m = lambda cid: (c.execute("SELECT masked FROM credential WHERE id=?", (cid,)).fetchone() or [None])[0]
+    prov = (c.execute("SELECT provider FROM credential WHERE id=?", (r["credential_id"],)).fetchone() or [None])[0]
     return {"id": r["id"], "trigger_type": r["trigger_type"], "status": r["status"], "credential_id": r["credential_id"],
+            "calls_estimated": prov == "openrouter",
             "credential_masked": m(r["credential_id"]), "detected_at": iso(r["detected_at"]),
             "blocked_at": iso(r["blocked_at"]), "resolved_at": iso(r["resolved_at"]),
             "duration_s": round(r["blocked_at"] - r["detected_at"], 3) if r["blocked_at"] else None,
@@ -353,6 +387,23 @@ async def attack_stop():
 
 @router.post("/demo/reset")
 async def demo_reset():
+    return await _reset(openrouter=False)
+
+
+@router.post("/demo/reset-openrouter")
+async def demo_reset_openrouter():
+    """reset과 같되 크레덴셜은 OpenRouter 키 2개(K1 PRIMARY, S1 STANDBY, 각 $0.5)를 새로 만들어 시드."""
+    return await _reset(openrouter=True)
+
+
+@router.post("/demo/cleanup-openrouter")
+async def demo_cleanup_openrouter():
+    """발표 후 정리: 이름이 november-로 시작하는 OpenRouter 키만 삭제."""
+    async with httpx.AsyncClient(timeout=20) as http:
+        return {"deleted": await providers.or_delete_ours(http)}
+
+
+async def _reset(openrouter: bool):
     await stop_attack()
     for t in list(state["tasks"]):  # 직전 사고의 연출·손실 갱신 작업이 새 데이터(같은 id)를 건드리지 않게
         t.cancel()
@@ -360,8 +411,19 @@ async def demo_reset():
     blocked_ips.clear()
     _wif_cache.clear()
     async with lock:
-        async with httpx.AsyncClient(timeout=5) as http:
+        or_keys = []  # (role, 원문, hash). 네트워크는 DB 트랜잭션 밖에서
+        async with httpx.AsyncClient(timeout=20) as http:
             (await http.post(f"{MOCK}/demo/reset")).raise_for_status()
+            if openrouter:
+                await providers.or_delete_ours(http)
+                for role in ("PRIMARY", "STANDBY"):
+                    or_keys.append((role, *await providers.or_create_key(
+                        http, f"november-{role}-{secrets.token_hex(3)}", 0.5)))
+        if not openrouter:
+            try:
+                os.remove(LIVE_KEY_PATH)  # 라이브 페이지를 Mock 유출 키(LEAKED_KEY)로 되돌린다
+            except FileNotFoundError:
+                pass
         state["judged"].clear()
         now = datetime.now(timezone.utc).isoformat()
         tokens = {}
@@ -371,16 +433,20 @@ async def demo_reset():
                 c.execute(f"DELETE FROM {t}")
             c.execute("DELETE FROM sqlite_sequence")
             c.execute("INSERT INTO setting(key,value) VALUES('loss_limit_krw','100000')")
-            c.execute("INSERT INTO setting(key,value) VALUES('unauthorized_call_limit',?)", (str(DEFAULT_LIMIT_CALLS),))
+            c.execute("INSERT INTO setting(key,value) VALUES('unauthorized_call_limit',?)",
+                      (str(OPENROUTER_LIMIT_CALLS if openrouter else DEFAULT_LIMIT_CALLS),))
             c.executemany("INSERT INTO allowed_cidr(cidr,label) VALUES(?,?)",
                           [("127.0.0.1/32", "INTERNAL"), ("::1/128", "INTERNAL"),
                            ("10.0.0.0/16", "INTERNAL"), ("10.8.0.0/24", "VPN")])
-            for name, role in (("K1", "PRIMARY"), ("S1", "STANDBY")):
-                key = LEAKED_KEY if name == "K1" else f"sk-mock-{name}-{secrets.token_hex(4)}"
-                c.execute("INSERT INTO credential(provider,auth_mode,role,secret_enc,masked,provider_ref,created_at) "
-                          "VALUES('mock','API_KEY',?,?,?,?,?)", (role, vault.encrypt(key), mask_key(key), key, now))
-            c.execute("INSERT INTO credential(provider,auth_mode,role,masked,audience,provider_ref,created_at) "
-                      "VALUES('mock','WIF','STANDBY',?,'novem-wif','wif:novem-wif',?)", ("WIF:novem-wif", now))
+            for role, raw, h in or_keys:
+                insert_openrouter_cred(c, role, raw, h)
+            if not openrouter:
+                for name, role in (("K1", "PRIMARY"), ("S1", "STANDBY")):
+                    key = LEAKED_KEY if name == "K1" else f"sk-mock-{name}-{secrets.token_hex(4)}"
+                    c.execute("INSERT INTO credential(provider,auth_mode,role,secret_enc,masked,provider_ref,created_at) "
+                              "VALUES('mock','API_KEY',?,?,?,?,?)", (role, vault.encrypt(key), mask_key(key), key, now))
+                c.execute("INSERT INTO credential(provider,auth_mode,role,masked,audience,provider_ref,created_at) "
+                          "VALUES('mock','WIF','STANDBY',?,'novem-wif','wif:novem-wif',?)", ("WIF:novem-wif", now))
             for name in ("직원A", "직원B"):
                 sid = c.execute("INSERT INTO service(name) VALUES(?)", (name,)).lastrowid
                 tok = "nvm-" + secrets.token_urlsafe(24)
@@ -393,7 +459,7 @@ async def demo_reset():
                 c.execute("INSERT INTO honeykey(value_hash,masked,planted_at,created_at) VALUES(?,?,?,?)",
                           (hash_token(hk), mask_key(hk), planted, now))
                 state["honeykeys"][planted] = hk
-    return {"tokens": tokens, "honeykeys": state["honeykeys"]}
+    return {"tokens": tokens, "honeykeys": state["honeykeys"]} | ({"leaked_key": or_keys[0][1]} if openrouter else {})
 
 
 @router.post("/demo/honeypot/hit")

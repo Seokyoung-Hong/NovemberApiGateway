@@ -11,9 +11,9 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app import vault
-from app.contract import (ADMIN_KEY, DEFAULT_LIMIT_CALLS, DEFAULT_LIMIT_KRW, DEMO_MODE, PROVIDERS, cost_krw,
-                          hash_token, mask_key)
+from app import providers, vault
+from app.contract import (ADMIN_KEY, DEFAULT_LIMIT_CALLS, DEFAULT_LIMIT_KRW, DEMO_MODE, LIVE_KEY_PATH,
+                          OPENROUTER_MODEL, PROVIDERS, hash_token, mask_key)
 from app.db import get_conn
 
 router = APIRouter()
@@ -95,12 +95,12 @@ async def _upstream_key(client: httpx.AsyncClient, cred) -> str:
     return tok
 
 
-def _log_usage(service_id, cred_id, model, usage: dict, status_code: int):
+def _log_usage(service_id, cred, model, usage: dict, status_code: int):
     with get_conn() as c:
         c.execute("INSERT INTO usage_log(service_id,credential_id,model,input_tokens,output_tokens,cost_krw,status_code,at)"
                   " VALUES(?,?,?,?,?,?,?,?)",
-                  (service_id, cred_id, model, usage.get("prompt_tokens"), usage.get("completion_tokens"),
-                   cost_krw(usage.get("total_tokens", 0)), status_code, time.time()))
+                  (service_id, cred["id"], model, usage.get("prompt_tokens"), usage.get("completion_tokens"),
+                   providers.call_cost_krw(cred["provider"], usage), status_code, time.time()))
 
 
 def _bad_gateway(cred):
@@ -121,7 +121,7 @@ async def chat_completions(request: Request, authorization: str = Header(""),
         cidrs = c.execute("SELECT cidr FROM allowed_cidr").fetchall()
         tok = c.execute("SELECT * FROM gateway_token WHERE token_hash=?", (hash_token(token),)).fetchone() if token else None
         svc = c.execute("SELECT * FROM service WHERE id=?", (tok["service_id"],)).fetchone() if tok else None
-        cred = c.execute("SELECT * FROM credential WHERE provider='mock' AND role='PRIMARY' AND status='ACTIVE'"
+        cred = c.execute("SELECT * FROM credential WHERE role='PRIMARY' AND status='ACTIVE'"
                          " ORDER BY id LIMIT 1").fetchone()
 
     if hk:  # 허니키는 IP 검사보다 먼저. 호출자에겐 일반 401로 숨긴다
@@ -139,10 +139,16 @@ async def chat_completions(request: Request, authorization: str = Header(""),
         return JSONResponse({"error": "no_active_credential"}, status_code=503)
 
     body = await request.json()
+    url = f"{PROVIDERS['mock']}/v1/chat/completions"
+    if cred["provider"] == "openrouter":  # 실제 비용을 응답 usage.cost로 받는다
+        m = str(body.get("model") or "")
+        body = {**body, "model": m if m and not m.startswith(("mock", "demo")) else OPENROUTER_MODEL,
+                "usage": {"include": True}}
+        url = f"{PROVIDERS['openrouter']}/chat/completions"
     client = httpx.AsyncClient(timeout=60)
     try:
         key = await _upstream_key(client, cred)
-        req = client.build_request("POST", f"{PROVIDERS['mock']}/v1/chat/completions", json=body,
+        req = client.build_request("POST", url, json=body,
                                    headers={"Authorization": f"Bearer {key}"})
         resp = await client.send(req, stream=bool(body.get("stream")))
     except httpx.HTTPError:
@@ -158,7 +164,7 @@ async def chat_completions(request: Request, authorization: str = Header(""),
         await client.aclose()
         data = resp.json()
         if resp.status_code == 200 and data.get("usage") and gen == reset_gen[0]:
-            _log_usage(svc["id"], cred["id"], data.get("model", body.get("model")), data["usage"], resp.status_code)
+            _log_usage(svc["id"], cred, data.get("model", body.get("model")), data["usage"], resp.status_code)
         return JSONResponse(data, status_code=resp.status_code)
 
     async def relay():
@@ -175,7 +181,7 @@ async def chat_completions(request: Request, authorization: str = Header(""),
             await resp.aclose()
             await client.aclose()
             if usage and resp.status_code == 200 and gen == reset_gen[0]:
-                _log_usage(svc["id"], cred["id"], body.get("model"), usage, resp.status_code)
+                _log_usage(svc["id"], cred, body.get("model"), usage, resp.status_code)
 
     return StreamingResponse(relay(), status_code=resp.status_code, media_type="text/event-stream")
 
@@ -215,6 +221,8 @@ def list_credentials():
 def create_credential(b: CredIn):
     if b.provider not in PROVIDERS or b.role not in ("PRIMARY", "STANDBY"):
         raise HTTPException(400, "invalid provider/role")
+    if b.provider == "openrouter":
+        raise HTTPException(400, "openrouter는 POST /admin/openrouter/provision 사용")
     if b.auth_mode == "API_KEY" and b.secret:
         enc, masked, ref = vault.encrypt(b.secret), mask_key(b.secret), b.secret
     elif b.auth_mode == "WIF" and b.audience:
@@ -236,6 +244,36 @@ def delete_credential(cid: int):
     with get_conn() as c:
         c.execute("UPDATE credential SET status='REVOKED' WHERE id=?", (cid,))
     return {"ok": True}
+
+
+def insert_openrouter_cred(c, role: str, raw: str, key_hash: str) -> dict:
+    """OpenRouter 키를 vault에 암호화 저장. provider_ref = OpenRouter 키 hash. PRIMARY면 라이브 페이지용 파일에도 저장."""
+    cid = c.execute("INSERT INTO credential(provider,auth_mode,role,secret_enc,masked,provider_ref,created_at)"
+                    " VALUES('openrouter','API_KEY',?,?,?,?,?)",
+                    (role, vault.encrypt(raw), mask_key(raw), key_hash, now_iso())).lastrowid
+    if role == "PRIMARY":
+        with open(LIVE_KEY_PATH, "w", encoding="utf-8") as f:  # data/ 는 gitignore
+            json.dump({"key": raw}, f)
+    return {"id": cid, "masked": mask_key(raw), "role": role, "hash_masked": mask_key(key_hash)}
+
+
+class ProvisionIn(BaseModel):
+    role: str
+    limit_usd: float = 0.5
+
+
+@admin.post("/openrouter/provision")
+async def provision_openrouter(b: ProvisionIn):
+    if b.role not in ("PRIMARY", "STANDBY") or b.limit_usd <= 0:
+        raise HTTPException(400, "invalid role/limit_usd")
+    with get_conn() as c:
+        if b.role == "PRIMARY" and c.execute("SELECT 1 FROM credential WHERE role='PRIMARY' AND status='ACTIVE'").fetchone():
+            raise HTTPException(400, "active PRIMARY already exists")
+    async with httpx.AsyncClient(timeout=20) as http:
+        raw, h = await providers.or_create_key(http, f"november-{b.role}-{secrets.token_hex(3)}", b.limit_usd)
+    with get_conn() as c:
+        out = insert_openrouter_cred(c, b.role, raw, h)
+    return out | ({"leaked_key": raw} if b.role == "PRIMARY" else {})
 
 
 SETTING_DEFAULTS = {"unauthorized_call_limit": DEFAULT_LIMIT_CALLS, "loss_limit_krw": DEFAULT_LIMIT_KRW}

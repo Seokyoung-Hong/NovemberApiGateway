@@ -1,11 +1,21 @@
 """공용 계약: 모든 트랙이 여기서 import한다. 수정 금지(오케스트레이터만)."""
 import hashlib
 import os
+from pathlib import Path
+
+# .env 직접 파싱(이미 설정된 환경변수 우선). 게이트웨이·Mock 둘 다 이 모듈을 import하므로 여기서 한 번.
+_env = Path(__file__).resolve().parents[1] / ".env"
+if _env.exists():
+    for _l in _env.read_text(encoding="utf-8").splitlines():
+        _k, _, _v = _l.strip().partition("=")
+        if _k and not _k.startswith("#") and _v:
+            os.environ.setdefault(_k.strip(), _v.strip().strip("\"'"))
 
 GATEWAY_PORT = 8000
 MOCK_PORT = 9000
 MOCK_BASE_URL = os.getenv("MOCK_BASE_URL", "http://127.0.0.1:9000")
-PROVIDERS = {"mock": MOCK_BASE_URL}  # 공급자 이름 -> base_url
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+PROVIDERS = {"mock": MOCK_BASE_URL, "openrouter": OPENROUTER_BASE_URL}  # 공급자 이름 -> base_url
 ADMIN_KEY = "demo-admin"  # X-Admin-Key (/admin/*)
 DB_PATH = os.getenv("DB_PATH", "data/gateway.db")
 DEMO_MODE = os.getenv("DEMO_MODE", "1") == "1"
@@ -22,6 +32,17 @@ LEAKED_KEY = os.getenv("LEAKED_KEY", "sk-mock-K1-leaked-demo")  # 시드 K1의 �
 ATTACK_RPS = 5
 ATTACK_MAX_TOKENS = 2000  # 건당 800원
 WIF_TOKEN_TTL_S = 900
+
+# G. OpenRouter 라이브 모드
+USD_TO_KRW = 1400
+OPENROUTER_USAGE_LAG_S = 8  # 관리 키 GET /keys/{hash} usage 반영 지연(실측 약 6초) + 여유
+OPENROUTER_REVOKE_LAG_S = 20  # disabled:true 후 실제 401까지(실측 약 20초)
+OPENROUTER_MODEL = "openai/gpt-4o-mini"
+OPENROUTER_LIMIT_CALLS = 500  # reset-openrouter 시드 한도(호출 수, 추정치 기준)
+DEFAULT_CALL_COST_USD = 0.00005  # 호출당 평균 비용 기본값(게이트웨이 호출 이력이 없을 때)
+USAGE_LAG_S = {"mock": MOCK_USAGE_LAG_S, "openrouter": OPENROUTER_USAGE_LAG_S}
+RATIOS = {"mock": (SUSPECT_RATIO, WARN_RATIO, BLOCK_RATIO), "openrouter": (0.05, 0.2, 0.35)}  # 지연이 커서 낮춤
+LIVE_KEY_PATH = os.path.join(os.path.dirname(DB_PATH) or ".", "live_key.json")  # 프로비저닝한 유출 키(OpenRouter 모드)
 
 
 def cost_krw(tokens: int) -> float:
@@ -46,14 +67,16 @@ def effective_calls_diff(provider_calls: int, gateway_calls: int) -> int:
     return max(0, provider_calls - gateway_calls - TOLERANCE_CALLS)
 
 
-def judge(diff: float, limit: float) -> str:
-    """effective_calls_diff(호출 수)와 한도(호출 수)로 판정: NORMAL | SUSPECT | WARNING | BREACH"""
+def judge(diff: float, limit: float, ratios=RATIOS["mock"]) -> str:
+    """effective_calls_diff(호출 수)와 한도(호출 수)로 판정: NORMAL | SUSPECT | WARNING | BREACH.
+    ratios = (SUSPECT, WARN, BLOCK) 비율, 공급자별(RATIOS)."""
     r = diff / limit
-    if r >= BLOCK_RATIO:
+    suspect, warn, block = ratios
+    if r >= block:
         return "BREACH"
-    if r >= WARN_RATIO:
+    if r >= warn:
         return "WARNING"
-    if r >= SUSPECT_RATIO:
+    if r >= suspect:
         return "SUSPECT"
     return "NORMAL"
 
@@ -62,5 +85,6 @@ if __name__ == "__main__":  # 최소 자체 검증
     assert cost_krw(2000) == 800
     assert effective_diff(4000, 0) == 0 and effective_diff(30_000, 5_000) == 20_000
     assert [judge(d, 100) for d in (0, 10, 50, 70)] == ["NORMAL", "SUSPECT", "WARNING", "BREACH"]
+    assert [judge(d, 100, RATIOS["openrouter"]) for d in (4, 5, 20, 35)] == ["NORMAL", "SUSPECT", "WARNING", "BREACH"]
     assert effective_calls_diff(20, 10) == 7 and effective_calls_diff(5, 10) == 0
     print("contract ok")
