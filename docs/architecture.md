@@ -54,51 +54,67 @@
 ## 3. 컴포넌트 다이어그램 (Mermaid)
 ```mermaid
 flowchart LR
-    subgraph Actors[행위자]
-        U1[사용자 클라이언트]
-        U2[대표/관리자]
-        U3[공격자·청중]
-        U4[외부 IdP / 로컬 IdP]
+    subgraph NET["인터넷 (공개 구간)"]
+        U1["사용자 클라이언트"]
+        U2["대표/관리자"]
+        U3["청중 / 공격자"]
+        U4["외부 IdP (OIDC)"]
+        P2["OpenRouter"]
+        P3["OpenAI"]
     end
 
-    subgraph GW[게이트웨이 앱 — FastAPI 8000]
-        G1[중계·접근통제\n허니키→IP→토큰/WIF→서비스]
-        G3[WIF 검증\nJWT·신뢰규칙]
-        G2[관리자 API]
-        D1[탐지·대응 워커\n2초 주기]
-        D2[대시보드·데모 제어]
-        U5[사용량 집계·예측]
-        G4[공급자 어댑터]
-        T1[/test 페이지/]
+    NPM["NPM hack.sio2.kr<br/>TLS 종료 · HTTPS 강제"]
+
+    subgraph TS["Tailscale 내부망 (WireGuard 암호화)"]
+        subgraph GW["게이트웨이 앱 - FastAPI"]
+            G1["중계 · 접근통제<br/>허니키 → IP → 토큰/WIF → 서비스"]
+            G3["WIF 검증<br/>JWT RS256 · 신뢰 규칙"]
+            G2["관리자 API"]
+            D1["탐지 · 대응 워커<br/>2초 주기"]
+            D2["대시보드 · 데모 제어"]
+            U5["사용량 집계 · 예측"]
+            G4["공급자 어댑터"]
+            T1["테스트 페이지 /test"]
+        end
+        subgraph MK["Mock Provider"]
+            M1["가짜 공급자<br/>사용량 · 폐기 · STS"]
+            M2["청중 라이브 /live"]
+        end
+        S1[("SQLite<br/>로컬 파일")]
+        S2["Vault<br/>Fernet 암호화"]
     end
 
-    subgraph MK[Mock Provider — 9000]
-        M1[가짜 공급자\n사용량·폐기·STS]
-        M2[청중 라이브 /live]
-    end
-
-    S1[(SQLite)]
-    S2[Vault Fernet]
-    P2[OpenRouter]
-    P3[OpenAI]
-
-    U1 -- "API 토큰 또는 JWT" --> G1
-    U4 -- "단기 JWT" --> U1
-    G1 -.JWT 검증.-> G3
-    U2 --> G2 & D2 & U5 & T1
-    G1 --> G4 -- "중계" --> M1 & P2 & P3
-    G1 & G3 & G2 --> S1
-    G2 --> S2
-    G4 --> S2
-    U3 -- "유출된 키, 게이트웨이 우회" --> M2
+    U1 -- "HTTPS + Bearer 토큰 또는 JWT" --> NPM
+    U2 -- "HTTPS + X-Admin-Key" --> NPM
+    U3 -- "HTTPS + 유출 키 (속도 제한)" --> NPM
+    U4 -. "JWT 발급 (OIDC)" .-> U1
+    G3 -. "HTTPS JWKS 조회" .-> U4
+    NPM -- "WireGuard + HTTP<br/>XFF는 신뢰 프록시만" --> G1
+    NPM -- "WireGuard + HTTP" --> G2
+    NPM -- "WireGuard + HTTP" --> D2
+    NPM -- "WireGuard + HTTP" --> U5
+    NPM -- "WireGuard + HTTP" --> T1
+    NPM -- "WireGuard + HTTP (/live)" --> M2
+    G1 -. "JWT 검증" .-> G3
+    G1 --> G4
+    G4 -- "HTTPS + 공급자 API 키<br/>WIF는 STS 15분 토큰" --> P2
+    G4 -- "HTTPS + 공급자 API 키" --> P3
+    G4 -- "HTTP 내부 (데모)" --> M1
     M2 --> M1
-    U3 -. 직접 .-> P2 & P3
-    D1 -- "사용량 조회" --> G4
-    G4 --> M1 & P2 & P3
-    D1 -- "비교·판정·사고" --> S1
-    D1 -- "폐기·승격" --> G4
-    D2 & U5 --> S1
+    U3 -. "HTTPS + 유출 키 (게이트웨이 우회)" .-> P2
+    U3 -. "HTTPS + 유출 키 (게이트웨이 우회)" .-> P3
+    D1 -- "HTTPS + 관리 키<br/>사용량 조회 · 폐기" --> G4
+    G1 -- "로컬 파일" --> S1
+    G3 --> S1
+    G2 --> S1
+    D1 -- "비교 · 판정 · 사고" --> S1
+    D2 --> S1
+    U5 --> S1
+    G2 -- "Fernet 암호화 저장" --> S2
+    G4 -- "복호화" --> S2
 ```
+
+**범례**: 실선 = 정상 경로, 점선 = 보조·우회 경로(청중/공격자의 직접 호출은 게이트웨이를 거치지 않음). 구간별 프로토콜은 5-1절 표 참조.
 
 ## 4. 핵심 시퀀스
 ### 4-1. 정상 호출
