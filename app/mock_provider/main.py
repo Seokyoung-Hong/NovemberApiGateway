@@ -1,13 +1,24 @@
 """OpenAI 호환 Mock Provider (인메모리 상태)."""
 import json
+import os
 import secrets
 import time
+from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from app.contract import MOCK_USAGE_LAG_S, WIF_TOKEN_TTL_S, cost_krw
+
+# .env 직접 파싱(이미 설정된 환경변수 우선)
+_env = Path(__file__).resolve().parents[2] / ".env"
+if _env.exists():
+    for _l in _env.read_text(encoding="utf-8").splitlines():
+        _k, _, _v = _l.strip().partition("=")
+        if _k and not _k.startswith("#") and _v:
+            os.environ.setdefault(_k.strip(), _v.strip().strip("\"'"))
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -44,6 +55,51 @@ async def chat(request: Request):
         return _revoked()
     body = await request.json()
     n = int(body.get("max_tokens") or 300)
+    key, model = os.getenv("UPSTREAM_API_KEY"), str(body.get("model", "mock"))
+    if key and not model.startswith(("mock", "demo")):  # 실제 AI 패스스루(실패 시 가짜 응답으로 대체)
+        base = os.getenv("UPSTREAM_BASE_URL", "https://openrouter.ai/api/v1").rstrip("/")
+        hdr = {"Authorization": f"Bearer {key}"}
+        if not body.get("stream"):
+            try:
+                async with httpx.AsyncClient(timeout=8) as c:
+                    r = await c.post(f"{base}/chat/completions", json=body, headers=hdr)
+                d = r.json()
+                reqs.setdefault(owner, []).append((time.time(), int(d["usage"]["total_tokens"])))
+                if r.status_code == 200:
+                    return d
+                reqs[owner].pop()
+            except Exception:
+                pass
+        else:
+            try:  # 첫 바이트 전 오류만 대체 가능하도록 연결·헤더를 먼저 확보
+                c = httpx.AsyncClient(timeout=8)
+                up = await c.send(c.build_request("POST", f"{base}/chat/completions", headers=hdr, json={
+                    **body, "stream_options": {"include_usage": True}}), stream=True)
+                if up.status_code != 200:
+                    raise RuntimeError
+            except Exception:
+                pass
+            else:
+                async def relay():
+                    total = None
+                    try:
+                        async for line in up.aiter_lines():
+                            if not line.strip():
+                                continue
+                            if line.startswith("data:") and "[DONE]" not in line and '"usage"' in line:
+                                try:
+                                    total = (json.loads(line[5:]).get("usage") or {}).get("total_tokens", total)
+                                except ValueError:
+                                    pass
+                            if "[DONE]" not in line:
+                                yield line + "\n\n"
+                    except Exception:
+                        pass
+                    finally:
+                        await up.aclose(); await c.aclose()
+                        reqs.setdefault(owner, []).append((time.time(), int(total if total is not None else n)))
+                    yield "data: [DONE]\n\n"
+                return StreamingResponse(relay(), media_type="text/event-stream")
     reqs.setdefault(owner, []).append((time.time(), n))
     model, cid, now = body.get("model", "mock"), "chatcmpl-" + secrets.token_hex(8), int(time.time())
     usage = {"prompt_tokens": 0, "completion_tokens": n, "total_tokens": n}

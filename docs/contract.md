@@ -52,3 +52,15 @@
   `judge(effective_diff, limit)` 결과: SUSPECT/WARNING은 상태·이벤트 기록, BREACH는 **자동 대응**: 폐기(`POST /revoke`) → credential REVOKED → 가장 id 작은 STANDBY(ACTIVE)를 PRIMARY로 승격(`replaced_by_id`) → incident 생성/갱신(멱등, credential당 1개) → 이벤트 `BLOCKED` → 승격 키로 Mock에 소액 호출 성공 확인 시 `RESOLVED` + 이벤트 `RECOVERED`.
   STANDBY가 없으면 timeline에 실패로 기록하고 status BLOCKED 유지.
 - 대시보드 `status` 계산: 열린 incident가 ROTATED 이전이면 BLOCKED, RESOLVED 직후 `RECOVERED`(다음 정상 호출 누적 전까지 유지), 아니면 최신 judge 결과(BREACH 없음).
+
+## E. 추가 엔드포인트 (구현 반영)
+- 허니키: 게이트웨이에 심어 둔 가짜 토큰(`nvm-honey-...`). 중계에서 일치하면 호출자에게는 **일반 401 `invalid_token`**, 내부적으로 `honeykey_event` + 이벤트 `HONEYKEY` + 사고(`trigger_type=HONEYKEY`, `credential_id=null`) 생성, 출발 IP를 600초 임시 차단(이후 403 `ip_blocked`).
+- `GET /admin/honeykeys` → `[{id,masked,planted_at,created_at,hits}]`
+- `POST /demo/honeypot/hit` → `{source_ip:"203.0.113.77",planted_at,status_code:401,response:{error:"invalid_token"}}` (리셋 전이면 409)
+- `POST /demo/reset` 응답에 `honeykeys:{planted_at: 원문}` 추가.
+- `GET /admin/dashboard` 추가 필드: `honeykey_hits:[{at,honeykey_masked,planted_at,source_ip}]`, `blocked_ips:[{source_ip,until}]`
+- `GET /admin/incidents`, `/admin/incidents/{id}`: `trigger_type` 추가. 허니키 사고는 `credential_id`·`credential_masked`가 null.
+- `POST /admin/services/{id}/suspend` → `{id,status:"SUSPENDED"}`, `POST /admin/services/{id}/resume` → `{id,status:"ACTIVE"}` (없는 id는 404). 정지 서비스 토큰은 403 `service_suspended`.
+- 거부 사유 `reason` 값: `ip_not_allowed | invalid_token | service_suspended | ip_blocked`.
+- 실제 AI: Mock Provider에 환경변수 `UPSTREAM_API_KEY`(+선택 `UPSTREAM_BASE_URL`, 기본 OpenRouter)가 있고 요청 `model`이 `mock`/`demo`로 시작하지 않으면 실제 업스트림으로 전달하고 실제 usage로 집계한다. 실패 시 가짜 응답으로 자동 대체.
+- 구 스키마 DB는 서버 시작 시 자동으로 재생성된다(데모 데이터 삭제됨).

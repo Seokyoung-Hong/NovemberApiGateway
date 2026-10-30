@@ -6,18 +6,26 @@ import time
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from app import vault
 from app.contract import (ADMIN_KEY, ATTACK_MAX_TOKENS, ATTACK_RPS, BLOCK_RATIO, MOCK_USAGE_LAG_S,
                           POLL_INTERVAL_S, PROVIDERS, WARN_RATIO, cost_krw, effective_diff, hash_token,
                           judge, mask_key)
 from app.db import get_conn
+from app.gateway.router import _wif_cache, blocked_ips, reset_gen
 
 MOCK = PROVIDERS["mock"]
 router = APIRouter()
 lock = asyncio.Lock()  # ponytail: 워커 1틱·리셋을 직렬화하는 전역 락. 다중 워커 배포면 DB 락으로.
-state = {"attack": None, "judged": {}, "updated_at": None}  # judged: credential_id -> 최근 판정
+state = {"attack": None, "judged": {}, "updated_at": None, "tasks": set(), "honeykeys": {}}
+# judged: credential_id -> 최근 판정, tasks: 대응 백그라운드 작업(리셋 시 취소), honeykeys: planted_at -> 원문(데모용)
+
+
+def spawn(coro):
+    t = asyncio.create_task(coro)
+    state["tasks"].add(t)
+    t.add_done_callback(state["tasks"].discard)
 
 
 def iso(t):
@@ -116,8 +124,8 @@ async def respond(http, cred, diff, lim):
             c.execute("UPDATE credential SET role='PRIMARY' WHERE id=?", (sb["id"],))
             c.execute("UPDATE credential SET replaced_by_id=? WHERE id=?", (sb["id"], cred["id"]))
     save_tl(iid, tl, blocked_at=time.time(), new_credential_id=sb["id"] if sb else None)
-    asyncio.create_task(final_loss(cred, iid))
-    asyncio.create_task(recover(cred, iid, tl, diff, lim, sb))
+    spawn(final_loss(cred, iid))
+    spawn(recover(cred, iid, tl, diff, lim, sb))
 
 
 async def recover(cred, iid, tl, diff, lim, sb):
@@ -187,19 +195,24 @@ def dashboard():
                 worst = max(worst, judge(d, lim), key=order.index)
             rows.append({k: cr[k] for k in ("id", "provider", "auth_mode", "role", "status", "masked")}
                         | {"gateway_cost_krw": g, "provider_cost_krw": p, "diff_krw": d})
-        inc = c.execute("SELECT * FROM incident ORDER BY id DESC LIMIT 1").fetchone()
+        inc = c.execute("SELECT * FROM incident WHERE trigger_type!='HONEYKEY' ORDER BY id DESC LIMIT 1").fetchone()
         status = "WARNING" if worst == "BREACH" else worst  # BREACH는 워커가 곧 BLOCKED로 바꾼다
         if inc and inc["status"] != "RESOLVED":
             status = "BLOCKED"
         elif inc and time.time() - inc["resolved_at"] < RECOVERED_HOLD_S:
             status = "RECOVERED"
+        hits = [{"at": iso(r["at"]), "honeykey_masked": r["masked"], "planted_at": r["planted_at"],
+                 "source_ip": r["source_ip"]} for r in c.execute(
+            "SELECT e.at,e.source_ip,h.masked,h.planted_at FROM honeykey_event e JOIN honeykey h ON h.id=e.honeykey_id "
+            "ORDER BY e.id DESC LIMIT 5")]
         act = c.execute("SELECT id,provider,auth_mode,masked FROM credential "
                         "WHERE role='PRIMARY' AND status='ACTIVE' ORDER BY id LIMIT 1").fetchone()
     return {"status": status, "limit_krw": lim, "warn_at_krw": lim * WARN_RATIO, "block_at_krw": lim * BLOCK_RATIO,
             "diff_krw": dt, "gateway_cost_krw": gt, "provider_cost_krw": pt,
             "active_credential": dict(act) if act else None, "credentials": rows,
             "attack_running": attack_running(), "incident_id": inc["id"] if inc and status in ("BLOCKED", "RECOVERED") else None,
-            "updated_at": iso(state["updated_at"] or time.time())}
+            "updated_at": iso(state["updated_at"] or time.time()), "honeykey_hits": hits,
+            "blocked_ips": [{"source_ip": ip, "until": iso(u)} for ip, u in blocked_ips.items() if u > time.time()]}
 
 
 @router.get("/admin/timeseries", dependencies=[Depends(admin)])
@@ -223,7 +236,7 @@ def timeseries(range: int = 300):
 
 def incident_json(c, r):
     m = lambda cid: (c.execute("SELECT masked FROM credential WHERE id=?", (cid,)).fetchone() or [None])[0]
-    return {"id": r["id"], "status": r["status"], "credential_id": r["credential_id"],
+    return {"id": r["id"], "trigger_type": r["trigger_type"], "status": r["status"], "credential_id": r["credential_id"],
             "credential_masked": m(r["credential_id"]), "detected_at": iso(r["detected_at"]),
             "blocked_at": iso(r["blocked_at"]), "resolved_at": iso(r["resolved_at"]),
             "duration_s": round(r["blocked_at"] - r["detected_at"], 3) if r["blocked_at"] else None,
@@ -313,6 +326,11 @@ async def attack_stop():
 @router.post("/demo/reset")
 async def demo_reset():
     await stop_attack()
+    for t in list(state["tasks"]):  # 직전 사고의 연출·손실 갱신 작업이 새 데이터(같은 id)를 건드리지 않게
+        t.cancel()
+    reset_gen[0] += 1
+    blocked_ips.clear()
+    _wif_cache.clear()
     async with lock:
         async with httpx.AsyncClient(timeout=5) as http:
             (await http.post(f"{MOCK}/demo/reset")).raise_for_status()
@@ -321,7 +339,7 @@ async def demo_reset():
         tokens = {}
         with get_conn() as c:
             for t in ("setting", "allowed_cidr", "service", "gateway_token", "credential", "usage_log",
-                      "provider_usage", "access_denied_log", "incident", "event"):
+                      "provider_usage", "access_denied_log", "incident", "event", "honeykey", "honeykey_event"):
                 c.execute(f"DELETE FROM {t}")
             c.execute("DELETE FROM sqlite_sequence")
             c.execute("INSERT INTO setting(key,value) VALUES('loss_limit_krw','100000')")
@@ -340,4 +358,24 @@ async def demo_reset():
                 c.execute("INSERT INTO gateway_token(service_id,token_hash,token_masked,created_at) VALUES(?,?,?,?)",
                           (sid, hash_token(tok), mask_key(tok), now))
                 tokens[name] = tok
-    return {"tokens": tokens}
+            state["honeykeys"] = {}
+            for planted in ("공개 저장소 .env.example", "사내 위키 설정 예시"):
+                hk = "nvm-honey-" + secrets.token_urlsafe(18)
+                c.execute("INSERT INTO honeykey(value_hash,masked,planted_at,created_at) VALUES(?,?,?,?)",
+                          (hash_token(hk), mask_key(hk), planted, now))
+                state["honeykeys"][planted] = hk
+    return {"tokens": tokens, "honeykeys": state["honeykeys"]}
+
+
+@router.post("/demo/honeypot/hit")
+async def honeypot_hit(request: Request):
+    """데모 버튼: 외부 공격자(203.0.113.77)가 유출된 허니키로 게이트웨이를 호출."""
+    if not state["honeykeys"]:
+        raise HTTPException(409, "honeykey 없음. /demo/reset 먼저")
+    planted, hk = next(iter(state["honeykeys"].items()))
+    ip = "203.0.113.77"
+    async with httpx.AsyncClient(timeout=10) as http:
+        r = await http.post(f"{str(request.base_url).rstrip('/')}/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {hk}", "X-Demo-Source-IP": ip},
+                            json={"model": "mock", "messages": [{"role": "user", "content": "hi"}]})
+    return {"source_ip": ip, "planted_at": planted, "status_code": r.status_code, "response": r.json()}

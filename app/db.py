@@ -37,14 +37,21 @@ CREATE TABLE IF NOT EXISTS access_denied_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, source_ip TEXT, reason TEXT,     -- ip_not_allowed|invalid_token|service_suspended
   token_masked TEXT, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS incident (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, credential_id INTEGER NOT NULL,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, credential_id INTEGER,           -- HONEYKEY 사고는 NULL
+  trigger_type TEXT NOT NULL DEFAULT 'RECONCILIATION',                   -- RECONCILIATION|HONEYKEY
   status TEXT NOT NULL,                                                  -- OPEN|ROTATED|RESOLVED
   detected_at REAL NOT NULL, blocked_at REAL, resolved_at REAL,
   loss_krw REAL, limit_krw REAL, new_credential_id INTEGER,
   timeline TEXT NOT NULL DEFAULT '[]');                                  -- JSON [{at,step,detail,ok}]
+CREATE TABLE IF NOT EXISTS honeykey (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, value_hash TEXT NOT NULL UNIQUE, masked TEXT NOT NULL,
+  planted_at TEXT NOT NULL, created_at TEXT NOT NULL);                   -- planted_at: 심은 위치 설명
+CREATE TABLE IF NOT EXISTS honeykey_event (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, honeykey_id INTEGER NOT NULL,
+  source_ip TEXT, path TEXT, at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS event (
   id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL,
-  kind TEXT NOT NULL,   -- SUSPECT|WARNING|BLOCKED|RECOVERED|ATTACK_STARTED|ATTACK_STOPPED|ACCESS_DENIED
+  kind TEXT NOT NULL,   -- SUSPECT|WARNING|BLOCKED|RECOVERED|ATTACK_STARTED|ATTACK_STOPPED|ACCESS_DENIED|HONEYKEY
   message TEXT NOT NULL, data TEXT);
 """
 
@@ -60,5 +67,9 @@ def get_conn() -> sqlite3.Connection:
 
 def init_db() -> None:
     with get_conn() as c:
+        cols = [r[1] for r in c.execute("PRAGMA table_info(incident)")]
+        if cols and "trigger_type" not in cols:  # 구 스키마 DB: 데모 데이터이므로 전부 버리고 재생성
+            for (t,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
+                c.execute(f"DROP TABLE {t}")
         c.executescript(SCHEMA)
         c.execute("INSERT OR IGNORE INTO setting(key,value) VALUES('loss_limit_krw','100000')")

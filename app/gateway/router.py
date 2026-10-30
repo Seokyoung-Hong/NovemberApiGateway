@@ -54,6 +54,30 @@ def _ip_allowed(ip: str, cidrs) -> bool:
 
 
 _wif_cache: dict[str, tuple[str, float]] = {}  # audience -> (token, 만료 epoch)
+blocked_ips: dict[str, float] = {}  # 허니키 사용 IP -> 차단 해제 epoch. ponytail: 메모리 보관, 재시작 시 사라짐
+reset_gen = [0]  # /demo/reset마다 증가. 리셋 전에 시작한 중계는 usage_log를 쓰지 않는다(id 재사용 충돌 방지)
+HONEY_BLOCK_S, HONEY_DEDUP_S = 600, 60
+
+
+def _honeykey_hit(hk, ip: str, path: str):
+    """허니키 사용: honeykey_event + HONEYKEY 이벤트 + 사고(60초 중복 방지) + IP 임시 차단."""
+    now = time.time()
+    blocked_ips[ip] = now + HONEY_BLOCK_S
+    msg = f"허니키 사용 탐지: {hk['masked']}({hk['planted_at']}) 출발 IP {ip}"
+    with get_conn() as c:
+        dup = c.execute("SELECT 1 FROM honeykey_event WHERE honeykey_id=? AND source_ip=? AND at>?",
+                        (hk["id"], ip, now - HONEY_DEDUP_S)).fetchone()
+        c.execute("INSERT INTO honeykey_event(honeykey_id,source_ip,path,at) VALUES(?,?,?,?)", (hk["id"], ip, path, now))
+        iid = None
+        if not dup:
+            tl = [{"at": iso(now), "step": "DETECTED", "ok": True, "detail": msg},
+                  {"at": iso(now), "step": "NOTIFY_ADMIN", "ok": True,
+                   "detail": f"관리자 통보, {ip} {HONEY_BLOCK_S}초 차단"}]
+            iid = c.execute("INSERT INTO incident(credential_id,trigger_type,status,detected_at,blocked_at,timeline)"
+                            " VALUES(NULL,'HONEYKEY','OPEN',?,?,?)", (now, now, json.dumps(tl, ensure_ascii=False))).lastrowid
+        c.execute("INSERT INTO event(at,kind,message,data) VALUES(?,?,?,?)",
+                  (now, "HONEYKEY", msg, json.dumps({"honeykey_id": hk["id"], "planted_at": hk["planted_at"],
+                                                      "source_ip": ip, "incident_id": iid}, ensure_ascii=False)))
 
 
 async def _upstream_key(client: httpx.AsyncClient, cred) -> str:
@@ -90,13 +114,20 @@ async def chat_completions(request: Request, authorization: str = Header(""),
     ip = x_demo_source_ip if (DEMO_MODE and x_demo_source_ip) else (request.client.host if request.client else "")
     token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
 
+    gen = reset_gen[0]
     with get_conn() as c:
+        hk = c.execute("SELECT * FROM honeykey WHERE value_hash=?", (hash_token(token),)).fetchone() if token else None
         cidrs = c.execute("SELECT cidr FROM allowed_cidr").fetchall()
         tok = c.execute("SELECT * FROM gateway_token WHERE token_hash=?", (hash_token(token),)).fetchone() if token else None
         svc = c.execute("SELECT * FROM service WHERE id=?", (tok["service_id"],)).fetchone() if tok else None
         cred = c.execute("SELECT * FROM credential WHERE provider='mock' AND role='PRIMARY' AND status='ACTIVE'"
                          " ORDER BY id LIMIT 1").fetchone()
 
+    if hk:  # 허니키는 IP 검사보다 먼저. 호출자에겐 일반 401로 숨긴다
+        _honeykey_hit(hk, ip, request.url.path)
+        return JSONResponse({"error": "invalid_token"}, status_code=401)
+    if blocked_ips.get(ip, 0) > time.time():
+        return _deny(403, "ip_blocked", ip, token)
     if not _ip_allowed(ip, cidrs):
         return _deny(403, "ip_not_allowed", ip, token)
     if not tok or tok["status"] != "ACTIVE":
@@ -125,7 +156,7 @@ async def chat_completions(request: Request, authorization: str = Header(""),
     if not body.get("stream"):
         await client.aclose()
         data = resp.json()
-        if resp.status_code == 200 and data.get("usage"):
+        if resp.status_code == 200 and data.get("usage") and gen == reset_gen[0]:
             _log_usage(svc["id"], cred["id"], data.get("model", body.get("model")), data["usage"], resp.status_code)
         return JSONResponse(data, status_code=resp.status_code)
 
@@ -142,7 +173,7 @@ async def chat_completions(request: Request, authorization: str = Header(""),
         finally:
             await resp.aclose()
             await client.aclose()
-            if usage and resp.status_code == 200:
+            if usage and resp.status_code == 200 and gen == reset_gen[0]:
                 _log_usage(svc["id"], cred["id"], body.get("model"), usage, resp.status_code)
 
     return StreamingResponse(relay(), status_code=resp.status_code, media_type="text/event-stream")
@@ -261,6 +292,31 @@ def list_services():
         return [{**dict(s), "tokens": [dict(t) for t in c.execute(
             "SELECT id,token_masked,status,created_at FROM gateway_token WHERE service_id=? ORDER BY id", (s["id"],))]}
             for s in c.execute("SELECT id,name,status FROM service ORDER BY id").fetchall()]
+
+
+def _set_service_status(sid: int, status: str):
+    with get_conn() as c:
+        if not c.execute("UPDATE service SET status=? WHERE id=?", (status, sid)).rowcount:
+            raise HTTPException(404, "service not found")
+    return {"id": sid, "status": status}
+
+
+@admin.post("/services/{sid}/suspend")
+def suspend_service(sid: int):
+    return _set_service_status(sid, "SUSPENDED")
+
+
+@admin.post("/services/{sid}/resume")
+def resume_service(sid: int):
+    return _set_service_status(sid, "ACTIVE")
+
+
+@admin.get("/honeykeys")
+def list_honeykeys():
+    with get_conn() as c:
+        return [dict(r) for r in c.execute(
+            "SELECT h.id,h.masked,h.planted_at,h.created_at,COUNT(e.id) AS hits FROM honeykey h "
+            "LEFT JOIN honeykey_event e ON e.honeykey_id=h.id GROUP BY h.id ORDER BY h.id")]
 
 
 class TokenIn(BaseModel):

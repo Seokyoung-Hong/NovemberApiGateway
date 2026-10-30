@@ -4,105 +4,114 @@
 erDiagram
     SERVICE ||--o{ GATEWAY_TOKEN : "발급"
     SERVICE ||--o{ USAGE_LOG : "호출"
-    PROVIDER ||--o{ CREDENTIAL : "보유"
-    CREDENTIAL ||--o| CREDENTIAL : "replaced_by (교체)"
+    CREDENTIAL ||--o| CREDENTIAL : "replaced_by_id (교체)"
     CREDENTIAL ||--o{ USAGE_LOG : "사용됨"
-    CREDENTIAL ||--o{ PROVIDER_USAGE : "공급자 집계"
-    CREDENTIAL ||--o{ RECONCILIATION : "대조 대상"
-    CREDENTIAL ||--o{ INCIDENT : "침해 대상"
-    RECONCILIATION ||--o| INCIDENT : "탐지 근거"
+    CREDENTIAL ||--o{ PROVIDER_USAGE : "공급자 누적 스냅샷"
+    CREDENTIAL ||--o{ INCIDENT : "침해 대상 (HONEYKEY는 NULL)"
+    CREDENTIAL ||--o| INCIDENT : "new_credential_id (승격된 예비키)"
     HONEYKEY ||--o{ HONEYKEY_EVENT : "접근됨"
-    HONEYKEY_EVENT ||--o| INCIDENT : "탐지 근거"
 
+    SETTING {
+        string key PK "loss_limit_krw 등"
+        string value
+    }
+    ALLOWED_CIDR {
+        int id PK
+        string cidr
+        string label "INTERNAL|VPN"
+    }
     SERVICE {
-        bigint id PK
-        string name "내부 서비스명"
+        int id PK
+        string name
         string status "ACTIVE|SUSPENDED"
-        datetime created_at
     }
     GATEWAY_TOKEN {
-        bigint id PK
-        bigint service_id FK
-        string token_hash "원문 저장 금지"
+        int id PK
+        int service_id FK
+        string token_hash UK "SHA-256, 원문 저장 금지"
+        string token_masked
         string status "ACTIVE|REVOKED"
-        datetime expires_at
-    }
-    PROVIDER {
-        bigint id PK
-        string name "openai|claude|gemini"
-        string auth_mode "WIF|VAULT"
+        string created_at
     }
     CREDENTIAL {
-        bigint id PK
-        bigint provider_id FK
-        bigint replaced_by_id FK "nullable, 교체된 새 인증정보"
+        int id PK
+        string provider "문자열 (예: mock). PROVIDER 테이블 없음"
+        string auth_mode "API_KEY|WIF"
         string role "PRIMARY|STANDBY"
         string status "ACTIVE|REVOKED"
-        string secret_ref "Vault 경로 또는 WIF 설정 ref (평문 금지)"
-        datetime expires_at "WIF 단기토큰이면 값 있음"
-        datetime created_at
+        string secret_enc "API_KEY: vault 암호문, WIF: NULL"
+        string masked
+        string audience "WIF 전용"
+        string provider_ref "공급자 사용량/폐기 식별자"
+        int replaced_by_id FK "nullable"
+        string created_at
     }
     USAGE_LOG {
-        bigint id PK
-        bigint service_id FK
-        bigint credential_id FK
+        int id PK
+        int service_id FK
+        int credential_id FK
         string model
         int input_tokens
         int output_tokens
-        decimal cost_usd
+        real cost_krw
         int status_code
-        datetime requested_at
+        real at "epoch 초"
     }
     PROVIDER_USAGE {
-        bigint id PK
-        bigint credential_id FK
-        datetime bucket_start "집계 구간 (예: 1시간)"
-        datetime bucket_end
-        bigint total_tokens
-        decimal cost_usd
-        datetime fetched_at
+        int id PK
+        int credential_id FK
+        real cost_krw "누적값 스냅샷"
+        int tokens
+        real at
     }
-    RECONCILIATION {
-        bigint id PK
-        bigint credential_id FK
-        datetime bucket_start
-        datetime bucket_end
-        bigint gateway_tokens "USAGE_LOG 합계"
-        bigint provider_tokens "PROVIDER_USAGE 합계"
-        bigint diff_tokens "provider - gateway"
-        float risk_score "0~1, 지연·오차 허용치 반영"
-        string verdict "NORMAL|SUSPECT|BREACH"
-    }
-    HONEYKEY {
-        bigint id PK
-        string kind "API_KEY|GATEWAY_TOKEN"
-        string decoy_value_hash "게이트웨이에 심어둔 가짜 키"
-        string planted_at "심은 위치 (예: .env.example, 로그)"
-    }
-    HONEYKEY_EVENT {
-        bigint id PK
-        bigint honeykey_id FK
+    ACCESS_DENIED_LOG {
+        int id PK
         string source_ip
-        string path
-        datetime occurred_at
+        string reason "ip_not_allowed|invalid_token|service_suspended"
+        string token_masked
+        real at
     }
     INCIDENT {
-        bigint id PK
+        int id PK
+        int credential_id FK "nullable (HONEYKEY)"
         string trigger_type "RECONCILIATION|HONEYKEY"
-        bigint credential_id FK "nullable (허니키는 없을 수 있음)"
-        bigint reconciliation_id FK "nullable"
-        bigint honeykey_event_id FK "nullable"
-        string status "OPEN|REVOKED|ROTATED|RESOLVED"
-        bigint new_credential_id FK "nullable, 전환된 예비키"
-        datetime detected_at
-        datetime resolved_at
-        datetime notified_at "관리자 통보 시각"
+        string status "OPEN|ROTATED|RESOLVED"
+        real detected_at
+        real blocked_at
+        real resolved_at
+        real loss_krw
+        real limit_krw
+        int new_credential_id FK "nullable"
+        string timeline "JSON [{at,step,detail,ok}]"
+    }
+    HONEYKEY {
+        int id PK
+        string value_hash UK
+        string masked
+        string planted_at "심은 위치 설명"
+        string created_at
+    }
+    HONEYKEY_EVENT {
+        int id PK
+        int honeykey_id FK
+        string source_ip
+        string path
+        real at
+    }
+    EVENT {
+        int id PK
+        real at
+        string kind "SUSPECT|WARNING|BLOCKED|RECOVERED|ATTACK_STARTED|ATTACK_STOPPED|ACCESS_DENIED|HONEYKEY"
+        string message
+        string data "JSON, nullable"
     }
 ```
 
+원본은 `app/db.py`의 `SCHEMA`. SETTING·ALLOWED_CIDR·ACCESS_DENIED_LOG·EVENT는 FK 없는 독립 테이블이라 관계선을 생략했다. 시간 컬럼은 `at`류는 epoch 초(real), `created_at`류는 ISO 문자열.
+
 ## 설계 메모
-- **탐지 흐름**: `USAGE_LOG`(게이트웨이 기록) vs `PROVIDER_USAGE`(공급자 조회) → `RECONCILIATION`에서 구간별 대조 → `verdict=BREACH`면 `INCIDENT` 생성.
-- **자동 대응**: `INCIDENT`가 `CREDENTIAL`을 `REVOKED`로 바꾸고, `role=STANDBY`인 키를 `PRIMARY`로 승격 (`replaced_by_id` / `new_credential_id` 기록).
-- **WIF vs Vault**: `PROVIDER.auth_mode`로 구분. WIF는 `expires_at`이 있는 단기 토큰, Vault는 `secret_ref`만 저장 — 키 원문은 DB에 없다.
-- **허니키**: 게이트웨이 자체 공격 탐지용. `HONEYKEY_EVENT`가 한 건이라도 생기면 즉시 `INCIDENT`(trigger=HONEYKEY).
-- **생략(YAGNI)**: 관리자/사용자 테이블, 알림 채널 테이블, 프로젝트·팀 계층. 필요하면 `INCIDENT.notified_at`을 알림 테이블로 분리.
+- **PROVIDER 테이블 없음**: 공급자는 `credential.provider` 문자열(PoC는 `mock`). 인증 방식은 `credential.auth_mode`(API_KEY|WIF).
+- **RECONCILIATION 테이블 없음**: 대조는 워커가 `usage_log` 합 vs 최신 `provider_usage`로 매 틱 계산(`effective_diff`/`judge`). 결과는 `event`와 `incident`로만 남는다.
+- **탐지 흐름**: BREACH → `incident` 생성(credential당 1개) → 공급자 폐기 → `credential` REVOKED + STANDBY를 PRIMARY 승격(`replaced_by_id`, `new_credential_id`).
+- **허니키**: `honeykey_event` 발생 시 `incident(trigger_type=HONEYKEY, credential_id=NULL)`와 `event(HONEYKEY)` 기록.
+- **키 원문**: API_KEY는 `secret_enc`(vault 암호문)만 저장, WIF는 `secret_enc`가 없고 단기 토큰을 Mock STS에서 발급.

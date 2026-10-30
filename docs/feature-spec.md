@@ -169,3 +169,14 @@ NORMAL → SUSPECT → WARNING → BLOCKED → RECOVERED
 ## 7. 리스크
 - LiteLLM 환경(Python 3.14, Postgres/Prisma 의존성)이 첫 병목일 수 있다. **첫 30분에 기동 확인**하고 막히면 LiteLLM은 중계·키 관리만 쓰고 사용량 대조·대응은 별도 워커로 분리한다.
 - 비용 공식이 Gateway와 Mock에서 1원이라도 다르면 항상 SUSPECT가 뜬다. 공식은 한 곳에서 import.
+
+## 구현 반영 사항 (PoC 구현 기준, 위 본문과 다른 점)
+- 탐지 워커 폴링 주기 `POLL_INTERVAL_S`=2초, Mock 집계 지연 `MOCK_USAGE_LAG_S`=2초.
+- 대시보드 `status`는 ACTIVE 크레덴셜 중 최악 판정. 열린 incident가 있으면 BLOCKED, RESOLVED 후 10초간 RECOVERED, 이후 NORMAL.
+- 타임라인: DETECTED·REVOKE는 즉시, PROMOTE_STANDBY·NOTIFY_ADMIN·VERIFIED는 연출용 1초 간격(표시 시각일 뿐 실제 승격은 폐기 직후 DB에 즉시 반영).
+- 폐기 즉시 STANDBY 승격(직원 호출 503 방지). 검증은 승격 키로 Mock에 `max_tokens=1` 호출.
+- 손실액은 탐지 시점 차액으로 먼저 기록하고, 폐기 2.5초 후 공급자 최종 사용량으로 재계산(`공급자 - 게이트웨이`).
+- 대조는 별도 테이블 없이 워커가 매 틱 `usage_log` vs `provider_usage`로 계산. PROVIDER 테이블도 없고 `credential.provider` 문자열.
+- 통화는 원(KRW), 토큰당 0.4원. 허용 오차 5,000원 차감 후 한도 대비 10%/50%/70%에서 SUSPECT/WARNING/차단.
+- 리허설: `scripts/rehearse.py`가 위 흐름을 자동 점검(PASS/FAIL).
+
