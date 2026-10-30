@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from app import providers, vault
 from app.contract import (ADMIN_KEY, DEFAULT_LIMIT_CALLS, DEFAULT_LIMIT_KRW, DEMO_MODE, LIVE_KEY_PATH,
-                          OPENROUTER_MODEL, PROVIDERS, hash_token, mask_key)
+                          PROVIDERS, USD_TO_KRW, hash_token, mask_key)
 from app.db import get_conn
 
 router = APIRouter()
@@ -100,7 +100,7 @@ def _log_usage(service_id, cred, model, usage: dict, status_code: int):
         c.execute("INSERT INTO usage_log(service_id,credential_id,model,input_tokens,output_tokens,cost_krw,status_code,at)"
                   " VALUES(?,?,?,?,?,?,?,?)",
                   (service_id, cred["id"], model, usage.get("prompt_tokens"), usage.get("completion_tokens"),
-                   providers.call_cost_krw(cred["provider"], usage), status_code, time.time()))
+                   providers.get(cred["provider"]).call_cost_usd(usage) * USD_TO_KRW, status_code, time.time()))
 
 
 def _bad_gateway(cred):
@@ -139,12 +139,8 @@ async def chat_completions(request: Request, authorization: str = Header(""),
         return JSONResponse({"error": "no_active_credential"}, status_code=503)
 
     body = await request.json()
-    url = f"{PROVIDERS['mock']}/v1/chat/completions"
-    if cred["provider"] == "openrouter":  # 실제 비용을 응답 usage.cost로 받는다
-        m = str(body.get("model") or "")
-        body = {**body, "model": m if m and not m.startswith(("mock", "demo")) else OPENROUTER_MODEL,
-                "usage": {"include": True}}
-        url = f"{PROVIDERS['openrouter']}/chat/completions"
+    ad = providers.get(cred["provider"])
+    body, url = ad.prepare(body), ad.chat_url
     client = httpx.AsyncClient(timeout=60)
     try:
         key = await _upstream_key(client, cred)
@@ -221,8 +217,8 @@ def list_credentials():
 def create_credential(b: CredIn):
     if b.provider not in PROVIDERS or b.role not in ("PRIMARY", "STANDBY"):
         raise HTTPException(400, "invalid provider/role")
-    if b.provider == "openrouter":
-        raise HTTPException(400, "openrouter는 POST /admin/openrouter/provision 사용")
+    if b.provider != "mock":
+        raise HTTPException(400, f"{b.provider}는 POST /admin/{b.provider}/provision 사용")
     if b.auth_mode == "API_KEY" and b.secret:
         enc, masked, ref = vault.encrypt(b.secret), mask_key(b.secret), b.secret
     elif b.auth_mode == "WIF" and b.audience:
@@ -246,33 +242,38 @@ def delete_credential(cid: int):
     return {"ok": True}
 
 
-def insert_openrouter_cred(c, role: str, raw: str, key_hash: str) -> dict:
-    """OpenRouter 키를 vault에 암호화 저장. provider_ref = OpenRouter 키 hash. PRIMARY면 라이브 페이지용 파일에도 저장."""
+def insert_provider_cred(c, provider: str, role: str, raw: str, ref: str) -> dict:
+    """프로비저닝한 실제 공급자 키를 vault에 암호화 저장. provider_ref = 공급자 식별자(OpenRouter hash,
+    OpenAI 'key_id|sa_id|project_id'). OpenRouter PRIMARY면 라이브 페이지용 파일에도 저장."""
     cid = c.execute("INSERT INTO credential(provider,auth_mode,role,secret_enc,masked,provider_ref,created_at)"
-                    " VALUES('openrouter','API_KEY',?,?,?,?,?)",
-                    (role, vault.encrypt(raw), mask_key(raw), key_hash, now_iso())).lastrowid
-    if role == "PRIMARY":
+                    " VALUES(?,'API_KEY',?,?,?,?,?)",
+                    (provider, role, vault.encrypt(raw), mask_key(raw), ref, now_iso())).lastrowid
+    if role == "PRIMARY" and provider == "openrouter":  # 라이브 페이지(/live)는 OpenRouter 키만 지원
         with open(LIVE_KEY_PATH, "w", encoding="utf-8") as f:  # data/ 는 gitignore
             json.dump({"key": raw}, f)
-    return {"id": cid, "masked": mask_key(raw), "role": role, "hash_masked": mask_key(key_hash)}
+    return {"id": cid, "masked": mask_key(raw), "role": role, "hash_masked": mask_key(ref.split("|")[0])}
 
 
 class ProvisionIn(BaseModel):
     role: str
-    limit_usd: float = 0.5
+    limit_usd: float = 0.5  # OpenRouter 키 한도(OpenAI는 무시)
+    name: Optional[str] = None  # 'november-' 접두는 강제
 
 
-@admin.post("/openrouter/provision")
-async def provision_openrouter(b: ProvisionIn):
+@admin.post("/{provider}/provision")
+async def provision(provider: str, b: ProvisionIn):
+    """provider = openrouter | openai. 원문 키는 PRIMARY일 때만 leaked_key로 1회 반환."""
+    if provider not in ("openrouter", "openai"):
+        raise HTTPException(404, "unknown provider")
     if b.role not in ("PRIMARY", "STANDBY") or b.limit_usd <= 0:
         raise HTTPException(400, "invalid role/limit_usd")
     with get_conn() as c:
         if b.role == "PRIMARY" and c.execute("SELECT 1 FROM credential WHERE role='PRIMARY' AND status='ACTIVE'").fetchone():
             raise HTTPException(400, "active PRIMARY already exists")
     async with httpx.AsyncClient(timeout=20) as http:
-        raw, h = await providers.or_create_key(http, f"november-{b.role}-{secrets.token_hex(3)}", b.limit_usd)
+        raw, ref = await providers.get(provider).provision(http, b.role, b.name, b.limit_usd)
     with get_conn() as c:
-        out = insert_openrouter_cred(c, b.role, raw, h)
+        out = insert_provider_cred(c, provider, b.role, raw, ref)
     return out | ({"leaked_key": raw} if b.role == "PRIMARY" else {})
 
 

@@ -107,3 +107,24 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
 - `GET /admin/usage/forecast?window_hours=1` → `{window_hours,rate_per_hour:{calls,tokens,cost_krw},projected:{end_of_day_cost_krw,end_of_month_cost_krw},per_service:[{service_id,name,rate_cost_krw_per_hour,projected_month_cost_krw}],budget:{monthly_budget_krw|null,hours_to_budget|null},method:"linear",note}`.
   예측 = 이미 쓴 금액(오늘/이번 달) + 최근 window 시간당 속도 × 남은 시간. `hours_to_budget` = (예산 − 이번 달 사용액) / 시간당 비용(이미 초과면 0, 속도 0이면 null). 한계: 단순 선형, 시간대·요일 패턴·급증(공격) 미반영, 창이 짧으면 변동 큼, 단가표는 수동 관리(공급자 가격 변경 시 갱신 필요).
 - `GET /admin/usage/budget` → `{monthly_budget_krw}`; `PUT` `{monthly_budget_krw: 양의 정수|null}`(null=해제, 0 이하 400). setting `monthly_budget_krw`에 저장.
+
+## I. 공급자 어댑터·OpenAI
+- 어댑터(`app/providers.py`, `ADAPTERS`): 공급자마다 `lag_s`(보고 지연), `revoke_lag_s`(폐기 후 401까지), `model`, `chat_url`, `fetch_usage(http, cred)`, `revoke`, `prepare(body)`, `call_cost_usd(usage)`, (실제 공급자) `provision`, `cleanup`. 새 공급자 = 어댑터 클래스 1개 + `contract.USAGE_LAG_S`/`RATIOS`/`PROVIDERS` 항목.
+  `fetch_usage`는 키별 누적값 중 **있는 것만** 준다: `{cost_usd?, tokens?, requests?, buckets?}` (`buckets=[(start,end,requests)]`).
+  | provider | lag_s | 주는 값 | 폐기 |
+  |---|---|---|---|
+  | mock | 2 | requests, tokens, cost_usd | `POST /revoke` |
+  | openrouter | 8 | cost_usd | `PATCH /keys/{hash}` disabled (약 20초) |
+  | openai | 420 (실측 381초) | requests, tokens, 1분 buckets | 서비스 계정 삭제 (실측 2.8초) |
+- 판정(탐지기 `assess`): 전제 = 공급자 값은 항상 게이트웨이 기록보다 늦다.
+  - 정렬 비교 `diff_calls`(대시보드 표시): buckets가 있으면 반영 완료 버킷(끝 ≤ now − lag_s)의 누적 호출 수 vs 같은 경계 이전 게이트웨이 호출 수(버킷 경계 정렬, 누적 비교라 분 경계 오차가 쌓이지 않음). requests만 있으면 스냅샷 vs 스냅샷 − lag_s까지의 게이트웨이. cost만(또는 tokens만) 있으면 차액 ÷ 1건 기대값으로 호출 수 추정(`calls_estimated: true`).
+  - 확실 유출 `certain_diff_calls`: 공급자 누적 − 게이트웨이 **현재까지 전체** 누적(오차 3건 차감). 공급자가 늦으므로 양수면 무단 사용이 확실하다(오탐 없음).
+  - 판정값 = max(diff_calls, certain_diff_calls). 그래서 정렬 비교가 아직 반영 전이어도 확실 유출이 차단선을 넘으면 바로 BREACH. Mock에서는 항상 certain ≤ diff라 기존 동작과 같다.
+  - 히스테리시스: 판정 상승은 즉시, 하강은 낮은 판정이 `HYSTERESIS_S`(10초) 이어질 때만.
+- 추정 보정(OpenRouter): 1건 기대값 = 최근 `CALL_COST_RECENT_N`(20)건 게이트웨이 평균 비용을 [$0.000012, $0.0002]로 제한, 이력 없으면 `DEFAULT_CALL_COST_USD`=$0.000016(청중 1건 실측). tokens만이면 평균 토큰 [20, 1000], 기본 150.
+- `/admin/dashboard` 추가 필드: 최상위·`credentials[]`에 `certain_diff_calls`, `diff_usd`(= max(0, 공급자 − 게이트웨이) USD, 허용오차 없음). `diff_krw`는 그대로. 크레덴셜 값은 워커 마지막 틱 계산값.
+- `provider_usage.requests` = 공급자 누적 호출 수(OpenAI는 부분 반영 포함 총합, OpenRouter는 추정치).
+- 엔드포인트(일반화): `POST /admin/{openrouter|openai}/provision` `{role, limit_usd?(OpenRouter만), name?}` → `{id, masked, role, hash_masked, leaked_key?}`. 이름은 항상 `november-` 접두. `POST /demo/reset-{openrouter|openai}`, `POST /demo/cleanup-{openrouter|openai}` → `{deleted}`.
+- OpenAI: 키 = 프로젝트(`OPENAI_PROJECT_ID`, 기본 proj_xkSCJaCHHKA3GEm5bEm02pHJ) 서비스 계정, Admin 키 `.env`의 `OPENAI_ADMIN_KEY`. `provider_ref = key_id|service_account_id|project_id`. 사용량 `GET /v1/organization/usage/completions?bucket_width=1m&group_by=api_key_id&api_key_ids=<key_id>`, 어댑터가 15초 캐시. 중계 `https://api.openai.com/v1/chat/completions`, 모델 기본 gpt-4o-mini, 비용은 토큰 × 상수($0.15/$0.60 per 1M, 근사). `/live` 청중 페이지는 OpenAI 키를 지원하지 않는다(`data/live_key.json`은 OpenRouter PRIMARY만 기록).
+- 시드 한도: reset-openrouter·reset-openai 모두 `unauthorized_call_limit`=100. 비율은 실제 공급자 0.05/0.2/0.35.
+- 최종 손실 재계산: 폐기 `revoke_lag_s + lag_s` 후(OpenAI 약 7분). `loss_calls = max(정렬 차이, 확실 유출)`, 오차 미차감.

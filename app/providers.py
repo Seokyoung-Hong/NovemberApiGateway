@@ -1,60 +1,172 @@
-"""공급자 어댑터: 'mock' | 'openrouter'. 사용액 조회·폐기·응답 비용 추출·OpenRouter 키 관리. 계약: docs/contract.md G."""
+"""공급자 어댑터. 새 공급자 = 어댑터 클래스 하나 + ADAPTERS 등록. 계약: docs/contract.md G·I.
+
+어댑터가 제공하는 것:
+- name, lag_s(공급자 보고 지연), revoke_lag_s(폐기 후 401까지), model(기본 모델), chat_url
+- fetch_usage(http, cred) -> 키별 누적값 중 '있는 것만': {cost_usd?, tokens?, requests?, buckets?}
+  buckets = [(start_epoch, end_epoch, requests)] (분 단위 등). 탐지기는 채워진 필드로 판정 방식을 고른다.
+- revoke(http, cred) -> bool, prepare(body) -> 중계 본문, call_cost_usd(usage) -> 중계 1건 비용
+- (실제 공급자) provision(http, role, name, limit_usd) -> (원문 키, provider_ref), cleanup(http) -> 삭제 수
+"""
 import os
+import secrets
+from datetime import datetime
 
-from app.contract import PROVIDERS, USD_TO_KRW, cost_krw
+from app.contract import (COST_PER_TOKEN_KRW, MOCK_BASE_URL, OPENAI_BASE_URL, OPENAI_MODEL, OPENAI_PROJECT_ID,
+                          OPENAI_REVOKE_LAG_S, OPENROUTER_BASE_URL, OPENROUTER_MODEL, OPENROUTER_REVOKE_LAG_S,
+                          USAGE_LAG_S, USD_TO_KRW)
 
-OR = PROVIDERS["openrouter"]
-OUR_PREFIX = "november-"  # 이 접두어로 시작하는 OpenRouter 키만 만들고·고치고·지운다
+OUR_PREFIX = "november-"  # 이 접두어로 시작하는 키·서비스 계정만 만들고·고치고·지운다
+
+# ponytail: gpt-4o-mini 단가 상수(USD/토큰). 가격표 모듈이 생기면 그쪽으로 교체.
+PRICE_IN, PRICE_OUT = 0.15e-6, 0.60e-6
 
 
-def _mgmt() -> dict:
-    return {"Authorization": f"Bearer {os.getenv('OPENROUTER_MANAGEMENT_KEY', '')}"}
+def _our_name(role: str, name: str | None) -> str:
+    n = name or f"{role}-{secrets.token_hex(3)}"
+    return n if n.startswith(OUR_PREFIX) else OUR_PREFIX + n
 
 
-async def usage(http, cred) -> dict:
-    """누적 사용량 {cost_krw, tokens, requests}. OpenRouter는 호출 수를 주지 않으므로 requests=None(추정 대상)."""
-    if cred["provider"] == "openrouter":
-        r = await http.get(f"{OR}/keys/{cred['provider_ref']}", headers=_mgmt())
+def _token_cost_usd(u: dict) -> float:
+    return (u.get("prompt_tokens") or 0) * PRICE_IN + (u.get("completion_tokens") or 0) * PRICE_OUT
+
+
+class Mock:
+    name, model, revoke_lag_s = "mock", "mock", 0.5
+    lag_s = USAGE_LAG_S["mock"]
+    chat_url = f"{MOCK_BASE_URL}/v1/chat/completions"
+
+    async def fetch_usage(self, http, cred):
+        u = (await http.get(f"{MOCK_BASE_URL}/usage", params={"owner": cred["provider_ref"]})).json()
+        return {"requests": u.get("requests", 0), "tokens": u["tokens"], "cost_usd": u["cost_krw"] / USD_TO_KRW}
+
+    async def revoke(self, http, cred):
+        return (await http.post(f"{MOCK_BASE_URL}/revoke", json={"owner": cred["provider_ref"]})).status_code == 200
+
+    def prepare(self, body):
+        return body
+
+    def call_cost_usd(self, u):
+        return u.get("total_tokens", 0) * COST_PER_TOKEN_KRW / USD_TO_KRW
+
+
+class OpenRouter:
+    """키별 누적 사용액(USD)만 준다(호출 수 없음, /activity는 당일 미지원) -> 탐지기가 호출 수 추정."""
+    name, model, revoke_lag_s = "openrouter", OPENROUTER_MODEL, OPENROUTER_REVOKE_LAG_S
+    lag_s = USAGE_LAG_S["openrouter"]
+    chat_url = f"{OPENROUTER_BASE_URL}/chat/completions"
+
+    def _h(self):
+        return {"Authorization": f"Bearer {os.getenv('OPENROUTER_MANAGEMENT_KEY', '')}"}
+
+    async def fetch_usage(self, http, cred):
+        r = await http.get(f"{OPENROUTER_BASE_URL}/keys/{cred['provider_ref']}", headers=self._h())
         r.raise_for_status()
-        return {"cost_krw": float(r.json()["data"]["usage"] or 0) * USD_TO_KRW, "tokens": 0, "requests": None}
-    u = (await http.get(f"{PROVIDERS['mock']}/usage", params={"owner": cred["provider_ref"]})).json()
-    return {"cost_krw": u["cost_krw"], "tokens": u["tokens"], "requests": u.get("requests", 0)}
+        return {"cost_usd": float(r.json()["data"]["usage"] or 0)}
+
+    async def revoke(self, http, cred):
+        r = await http.patch(f"{OPENROUTER_BASE_URL}/keys/{cred['provider_ref']}", headers=self._h(),
+                             json={"disabled": True})
+        return r.status_code == 200
+
+    def prepare(self, body):  # usage.cost(USD)를 응답으로 받는다
+        m = str(body.get("model") or "")
+        return {**body, "model": m if m and not m.startswith(("mock", "demo")) else self.model,
+                "usage": {"include": True}}
+
+    def call_cost_usd(self, u):
+        # cost 누락(스트림 중단 등) 시 gpt-4o-mini 단가로 추정
+        return float(u["cost"]) if u.get("cost") is not None else _token_cost_usd(u)
+
+    async def provision(self, http, role, name=None, limit_usd=0.5):
+        r = await http.post(f"{OPENROUTER_BASE_URL}/keys", headers=self._h(),
+                            json={"name": _our_name(role, name), "limit": limit_usd})
+        r.raise_for_status()
+        d = r.json()
+        return d["key"], d["data"]["hash"]
+
+    async def cleanup(self, http):
+        r = await http.get(f"{OPENROUTER_BASE_URL}/keys", headers=self._h(), params={"include_disabled": "true"})
+        r.raise_for_status()
+        n = 0
+        for k in r.json()["data"]:
+            if str(k.get("name") or "").startswith(OUR_PREFIX):
+                (await http.delete(f"{OPENROUTER_BASE_URL}/keys/{k['hash']}", headers=self._h())).raise_for_status()
+                n += 1
+        return n
 
 
-async def revoke(http, cred) -> bool:
-    if cred["provider"] == "openrouter":
-        r = await http.patch(f"{OR}/keys/{cred['provider_ref']}", headers=_mgmt(), json={"disabled": True})
-    else:
-        r = await http.post(f"{PROVIDERS['mock']}/revoke", json={"owner": cred["provider_ref"]})
-    return r.status_code == 200
+class OpenAI:
+    """Usage API가 키별 '분 버킷' 호출 수를 준다(반영 실측 약 381초). 키 = 프로젝트 서비스 계정.
+    provider_ref = 'key_id|service_account_id|project_id'."""
+    name, model, revoke_lag_s = "openai", OPENAI_MODEL, OPENAI_REVOKE_LAG_S
+    lag_s = USAGE_LAG_S["openai"]
+    chat_url = f"{OPENAI_BASE_URL}/chat/completions"
+    poll_s = 15  # Usage API 호출 간격(워커 2초마다 부르면 과함). 사이에는 직전 값을 돌려준다
+    _cache: dict = {}
 
+    def _h(self):
+        return {"Authorization": f"Bearer {os.getenv('OPENAI_ADMIN_KEY', '')}"}
 
-def call_cost_krw(provider: str, u: dict) -> float:
-    """중계 응답 usage -> 원. OpenRouter는 usage.cost(USD, usage:{include:true}로 요청)."""
-    if provider != "openrouter":
-        return cost_krw(u.get("total_tokens", 0))
-    if u.get("cost") is not None:
-        return float(u["cost"]) * USD_TO_KRW
-    # ponytail: cost 누락(스트림 중단 등) 시 gpt-4o-mini 단가($0.15/$0.6 per 1M)로 추정. 다른 모델이면 부정확.
-    return ((u.get("prompt_tokens") or 0) * 0.15e-6 + (u.get("completion_tokens") or 0) * 0.6e-6) * USD_TO_KRW
+    async def fetch_usage(self, http, cred):
+        key_id = cred["provider_ref"].split("|")[0]
+        now = datetime.now().timestamp()
+        hit = self._cache.get(key_id)
+        if hit and now - hit[0] < self.poll_s:
+            return hit[1]
+        start = int(datetime.fromisoformat(cred["created_at"]).timestamp()) // 60 * 60 - 60
+        r = await http.get(f"{OPENAI_BASE_URL}/organization/usage/completions", headers=self._h(), params={
+            "start_time": start, "bucket_width": "1m", "group_by": "api_key_id", "api_key_ids": key_id, "limit": 1440})
+        r.raise_for_status()
+        buckets, tokens = [], 0
+        for b in r.json().get("data", []):
+            res = [x for x in b.get("results", []) if x.get("api_key_id") in (None, key_id)]
+            buckets.append((b["start_time"], b["end_time"], sum(x.get("num_model_requests", 0) for x in res)))
+            tokens += sum((x.get("input_tokens") or 0) + (x.get("output_tokens") or 0) for x in res)
+        out = {"requests": sum(b[2] for b in buckets), "tokens": tokens, "buckets": buckets}
+        self._cache[key_id] = (now, out)
+        return out
 
+    async def revoke(self, http, cred):  # 서비스 계정 삭제(실측 2.8초 후 401)
+        _, sa_id, pid = cred["provider_ref"].split("|")
+        r = await http.delete(f"{OPENAI_BASE_URL}/organization/projects/{pid}/service_accounts/{sa_id}", headers=self._h())
+        return r.status_code == 200
 
-async def or_create_key(http, name: str, limit_usd: float) -> tuple[str, str]:
-    """(원문 키, hash). 원문은 이 응답에서만 받을 수 있다."""
-    assert name.startswith(OUR_PREFIX)
-    r = await http.post(f"{OR}/keys", headers=_mgmt(), json={"name": name, "limit": limit_usd})
-    r.raise_for_status()
-    d = r.json()
-    return d["key"], d["data"]["hash"]
+    def prepare(self, body):
+        m = str(body.get("model") or "")
+        out = {**body, "model": m if m and not m.startswith(("mock", "demo")) else self.model}
+        return out | ({"stream_options": {"include_usage": True}} if body.get("stream") else {})  # 마지막 청크에 usage
 
+    def call_cost_usd(self, u):  # 근사(단가 상수)
+        return _token_cost_usd(u)
 
-async def or_delete_ours(http) -> int:
-    """이름이 november-로 시작하는 키(비활성 포함)만 삭제. 그 외 키는 절대 건드리지 않는다."""
-    r = await http.get(f"{OR}/keys", headers=_mgmt(), params={"include_disabled": "true"})
-    r.raise_for_status()
-    n = 0
-    for k in r.json()["data"]:
-        if str(k.get("name") or "").startswith(OUR_PREFIX):
-            (await http.delete(f"{OR}/keys/{k['hash']}", headers=_mgmt())).raise_for_status()
+    async def provision(self, http, role, name=None, limit_usd=None):  # OpenAI 서비스 계정에는 금액 한도 없음
+        pid = OPENAI_PROJECT_ID
+        r = await http.post(f"{OPENAI_BASE_URL}/organization/projects/{pid}/service_accounts", headers=self._h(),
+                            json={"name": _our_name(role, name)})
+        r.raise_for_status()
+        d = r.json()
+        return d["api_key"]["value"], f"{d['api_key']['id']}|{d['id']}|{pid}"
+
+    async def cleanup(self, http):
+        pid, after, n = OPENAI_PROJECT_ID, None, 0
+        url = f"{OPENAI_BASE_URL}/organization/projects/{pid}/service_accounts"
+        ours = []
+        while True:
+            r = await http.get(url, headers=self._h(), params={"limit": 100} | ({"after": after} if after else {}))
+            r.raise_for_status()
+            d = r.json()
+            ours += [a["id"] for a in d.get("data", []) if str(a.get("name") or "").startswith(OUR_PREFIX)]
+            if not d.get("has_more") or not d.get("data"):
+                break
+            after = d["data"][-1]["id"]
+        for sa_id in ours:
+            (await http.delete(f"{url}/{sa_id}", headers=self._h())).raise_for_status()
             n += 1
-    return n
+        return n
+
+
+ADAPTERS = {a.name: a for a in (Mock(), OpenRouter(), OpenAI())}
+
+
+def get(provider: str):
+    return ADAPTERS[provider]

@@ -13,6 +13,7 @@ python -m venv .venv
 - 리허설(서버 기동 후): `.\.venv\Scripts\python scripts\rehearse.py` - 리셋, 정상 호출, 공격, 차단·복구를 자동 점검하고 PASS/FAIL 출력.
 - 구 스키마의 data/gateway.db는 서버 시작 시 자동 재생성됨(데모 데이터 삭제).
 - OpenRouter 라이브 모드(실제 키로 유출·차단 시연): `POST /demo/reset-openrouter` (`.env`에 `OPENROUTER_MANAGEMENT_KEY`), 정리 `POST /demo/cleanup-openrouter`. 절차는 `scripts/live.md`, 명세는 `docs/contract.md` G절.
+- 공급자 어댑터(mock·openrouter·openai, `app/providers.py`): `POST /demo/reset-openai`·`/demo/cleanup-openai`(`.env`에 `OPENAI_ADMIN_KEY`, 탐지 약 7분 지연). 명세 I절.
 - 관리자 API는 `X-Admin-Key: demo-admin` 헤더. 명세는 `docs/contract.md`.
 
 ## 문서
