@@ -38,7 +38,7 @@
   };
 
   const st = {
-    page: null, dash: null, range: 300, lastEvent: 0, feed: [], incident: null,
+    page: null, dash: null, range: 300, lastEvent: 0, feed: [], incident: null, popped: new Set(),
     traffic: false, trafficTimer: null, trafficN: 0, lastErr: {}, usageRange: 'day', liveSheet: null,
   };
 
@@ -917,7 +917,7 @@
   }
 
   function resetLocal() {
-    st.feed = []; st.lastEvent = 0; st.incident = null; st.lastErr = {};
+    st.feed = []; st.lastEvent = 0; st.incident = null; st.lastErr = {}; st.popped.clear();
     renderFeed();
     if (st.page !== 'home') route();
   }
@@ -973,21 +973,28 @@
     if (polling) return;
     polling = true;
     try {
-      const [d, ev] = await Promise.all([API.dashboard(), API.events(st.lastEvent)]);
+      let [d, ev] = await Promise.all([API.dashboard(), API.events(st.lastEvent)]);
       const prev = st.dash;
       st.dash = d;
       const first = st.lastEvent === 0 && !prev;
+      // fix: 다른 탭·API로 서버를 초기화해 이벤트 번호가 되감기면 처음부터 다시 받는다(안 그러면 새 이벤트·차단 팝업을 놓침)
+      if (ev.last_id != null && ev.last_id < st.lastEvent) { st.lastEvent = 0; st.feed = []; st.popped.clear(); ev = await API.events(0); }
+      const pop = (id) => { if (id && !st.popped.has(id)) { st.popped.add(id); incidentSheet(id, true); } }; // fix: 사고당 팝업 1번
       for (const e of ev.events) {
         st.feed.push(e);
         st.lastEvent = Math.max(st.lastEvent, e.id);
         if (first) continue;
         if (e.kind === 'SUSPECT') toast(e.message, 'warn');
         if (e.kind === 'WARNING') toast(e.message, 'warn', 4500);
-        if (e.kind === 'BLOCKED') { toast('유출 키를 자동으로 차단했어요', 'bad', 5000); if (e.data && e.data.incident_id) incidentSheet(e.data.incident_id, true); }
+        if (e.kind === 'BLOCKED') { toast('유출 키를 자동으로 차단했어요', 'bad', 5000); if (e.data) pop(e.data.incident_id); }
         if (e.kind === 'RECOVERED') toast(e.message, 'ok', 4500);
         if (e.kind === 'HONEYKEY') toast('허니키 사용을 탐지했어요', 'warn');
       }
       if (st.feed.length > 300) st.feed = st.feed.slice(-200);
+      // fix: BLOCKED 이벤트를 놓쳐도 상태가 BLOCKED로 바뀌는 순간 팝업을 띄운다(첫 화면부터 BLOCKED면 띄우지 않음)
+      if (prev && prev.status !== 'BLOCKED' && d.status === 'BLOCKED') pop(d.incident_id);
+      // fix: 사고가 두 번 연속 없으면 기록을 비운다(초기화 후 사고 번호가 1부터 다시 시작하므로)
+      if (!d.incident_id && prev && !prev.incident_id) st.popped.clear();
       if (d.incident_id && (!st.incident || st.incident.id !== d.incident_id || d.status === 'BLOCKED' || st.incident.loss_calls == null)) {
         st.incident = await API.incident(d.incident_id).catch(() => st.incident);
       }

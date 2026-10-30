@@ -554,8 +554,10 @@ def incident(iid: int):
 def events(since_id: int = 0):
     with get_conn() as c:
         rows = c.execute("SELECT * FROM event WHERE id>? ORDER BY id", (since_id,)).fetchall()
+        last_id = c.execute("SELECT COALESCE(MAX(id),0) FROM event").fetchone()[0]
+    # last_id: 콘솔이 since_id가 서버보다 앞서 있으면(번호 되감김) 처음부터 다시 받게 한다
     return {"events": [{"id": r["id"], "at": iso(r["at"]), "kind": r["kind"], "message": r["message"],
-                        "data": json.loads(r["data"]) if r["data"] else None} for r in rows]}
+                        "data": json.loads(r["data"]) if r["data"] else None} for r in rows], "last_id": last_id}
 
 
 # ---------------- 데모 ----------------
@@ -688,7 +690,8 @@ async def _reset(provider: str):
             for t in ("trusted_identity", "setting", "allowed_cidr", "service", "gateway_token", "credential", "usage_log",
                       "provider_usage", "access_denied_log", "incident", "event", "honeykey", "honeykey_event"):
                 c.execute(f"DELETE FROM {t}")
-            c.execute("DELETE FROM sqlite_sequence")
+            # event 번호는 되감지 않는다: 열려 있는 콘솔 탭(since_id=옛 번호)이 초기화 후 이벤트를 놓치지 않게
+            c.execute("DELETE FROM sqlite_sequence WHERE name<>'event'")
             c.execute("INSERT INTO setting(key,value) VALUES('loss_limit_krw','100000')")
             c.execute("INSERT INTO setting(key,value) VALUES('unauthorized_call_limit',?)",
                       (str(OPENROUTER_LIMIT_CALLS if real else DEFAULT_LIMIT_CALLS),))
