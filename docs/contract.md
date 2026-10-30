@@ -210,6 +210,8 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
 - 반영 지연은 편차가 크다(95초·381초). `lag_s=420`은 유지해도 오탐은 없고 탐지가 늦어질 수 있을 뿐이다.
 
 ## M. vLLM 공급자 (자체 GPU)
+
+> 해커톤 데모 전용 구성이다. 실제 시스템 아키텍처 그림에는 포함하지 않는다.
 공급자가 구현할 인터페이스는 `docs/vllm-gateway-spec.md`(정답). vLLM 앞단 게이트웨이가 키 인증(처음 보는 키도 유효, 폐기 키만 401)·키별 계량·폐기를 맡는다. 어댑터 `Vllm`(`app/providers.py`)은 Mock과 같은 모양.
 
 - 환경변수: `VLLM_BASE_URL`(기본 `http://127.0.0.1:8100`), `VLLM_ADMIN_KEY`(설정 시 관리 경로에 `X-Admin-Key`로 보냄, 공급자의 `GPU_ADMIN_KEY`와 같은 값), `VLLM_MODEL`(기본 `google/gemma-4-E4B-it-qat-w4a16-ct`), `USAGE_LAG_S_VLLM`(기본 2).
