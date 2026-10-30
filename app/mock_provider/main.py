@@ -8,9 +8,9 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from app.contract import MOCK_USAGE_LAG_S, WIF_TOKEN_TTL_S, cost_krw
+from app.contract import LEAKED_KEY, MOCK_USAGE_LAG_S, WIF_TOKEN_TTL_S, cost_krw
 
 # .env 직접 파싱(이미 설정된 환경변수 우선)
 _env = Path(__file__).resolve().parents[2] / ".env"
@@ -26,15 +26,17 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 reqs: dict[str, list[tuple[float, int]]] = {}  # owner -> [(시각, 토큰)]
 revoked: set[str] = set()
 sts: dict[str, tuple[str, float]] = {}  # 토큰 -> (owner, 만료 epoch)
+live_hits: dict[str, list[float]] = {}  # IP -> 최근 /live/chat 시각
+live_calls = 0
 
 
 def _reset():
-    reqs.clear(); revoked.clear(); sts.clear()
+    global live_calls
+    reqs.clear(); revoked.clear(); sts.clear(); live_hits.clear(); live_calls = 0
 
 
-def _owner(request: Request):
-    """Bearer -> owner. 폐기/만료/누락이면 None."""
-    key = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
+def _owner(key: str):
+    """키 -> owner. 폐기/만료/누락이면 None."""
     if key in sts:
         owner, exp = sts[key]
         if time.time() >= exp:
@@ -50,10 +52,13 @@ def _revoked():
 
 @app.post("/v1/chat/completions")
 async def chat(request: Request):
-    owner = _owner(request)
+    owner = _owner(request.headers.get("authorization", "").removeprefix("Bearer ").strip())
     if owner is None:
         return _revoked()
-    body = await request.json()
+    return await _complete(owner, await request.json())
+
+
+async def _complete(owner: str, body: dict):
     n = int(body.get("max_tokens") or 300)
     key, model = os.getenv("UPSTREAM_API_KEY"), str(body.get("model", "mock"))
     if key and not model.startswith(("mock", "demo")):  # 실제 AI 패스스루(실패 시 가짜 응답으로 대체)
@@ -144,6 +149,49 @@ async def sts_token(request: Request):
     tok = "wif-" + secrets.token_urlsafe(24)
     sts[tok] = (owner, time.time() + WIF_TOKEN_TTL_S)
     return {"token": tok, "expires_in": WIF_TOKEN_TTL_S, "owner": owner}
+
+
+LIVE_MODEL = os.getenv("LIVE_MODEL", "gpt-4o-mini")
+LIVE_HTML = Path(__file__).with_name("live.html")
+
+
+@app.get("/live")
+def live_page():
+    return FileResponse(LIVE_HTML)
+
+
+@app.get("/live/config")
+def live_config():
+    return {"key": LEAKED_KEY, "model": LIVE_MODEL}
+
+
+@app.post("/live/chat")
+async def live_chat(request: Request):
+    global live_calls
+    ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or request.client.host
+    now = time.time()
+    hits = live_hits.setdefault(ip, [])
+    hits[:] = [t for t in hits if t > now - 600]  # 10분 창(참여자 집계 겸용)
+    if sum(t > now - 20 for t in hits) >= 10:
+        return JSONResponse({"error": "rate_limited"}, status_code=429)
+    hits.append(now)
+    body = await request.json()
+    owner = _owner(str(body.get("key", "")).strip())
+    if owner is None:
+        return _revoked()
+    msg = str(body.get("message", ""))[:300]
+    d = await _complete(owner, {"model": LIVE_MODEL, "max_tokens": 150,
+                                "messages": [{"role": "user", "content": msg}]})
+    live_calls += 1
+    return {"reply": d["choices"][0]["message"]["content"], "status": 200}
+
+
+@app.get("/live/stats")
+def live_stats():
+    now = time.time()
+    return {"participants": sum(any(t > now - 600 for t in h) for h in live_hits.values()),
+            "calls": live_calls, "key_status": "revoked" if LEAKED_KEY in revoked else "active",
+            "updated_at": int(now)}
 
 
 @app.post("/demo/reset")

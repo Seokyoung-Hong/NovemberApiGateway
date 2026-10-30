@@ -35,9 +35,10 @@
 - 수용 기준: 등록 후 목록에서 원문이 어디에도 보이지 않는다.
 
 ### F2 한도 설정
-- 단일 값 `loss_limit_krw`(기본 100,000). 대표가 수정 가능. 변경은 즉시 판정에 반영.
+- 판정 기준 값 `unauthorized_call_limit`(허용하는 '설명되지 않는 호출 수', 기본 100). 대표가 수정 가능. 변경은 즉시 판정에 반영.
+- `loss_limit_krw`(기본 100,000)는 참고 표시용으로만 남는다(판정에 안 씀).
 - 경고/차단 비율은 상수(`WARN=0.5`, `BLOCK=0.7`, `SUSPECT=0.1`). `[가정]`
-- 허용 오차 `TOLERANCE_KRW=5,000`(진행 중 요청·집계 지연 흡수). `[가정]`
+- 허용 오차 `TOLERANCE_CALLS=3`건(진행 중 요청·집계 지연 흡수). `[가정]`
 
 ### F3 허용 IP 대역
 - CRUD: `cidr`, `label`(`INTERNAL`|`VPN`). 예: `10.0.0.0/16`, `10.8.0.0/24`, 데모용 `127.0.0.1/32`.
@@ -63,10 +64,11 @@
 - Mock은 **집계 지연 약 3초**를 흉내 낸다.
 
 ### F8 대조·판정
-- 크레덴셜별로 `diff = provider_cost − gateway_cost`(기준 시점 이후 누적, `TOLERANCE` 차감 후 0 미만은 0).
-- 판정표(한도 L):
+- 원리: 게이트웨이가 기록한 호출 수와 공급자가 보고한 호출 수를 비교한다. 게이트웨이가 모르는 호출이 있으면 그 키를 다른 누군가가 쓴 것이다.
+- 크레덴셜별로 `diff_calls = provider_calls − gateway_calls − TOLERANCE_CALLS`(누적, 0 미만은 0). 금액 차액(`diff_krw`)은 참고 표시만.
+- 판정표(한도 L = `unauthorized_call_limit` 호출 수):
 
-| diff | 상태 | 동작 |
+| diff_calls | 상태 | 동작 |
 |---|---|---|
 | < 0.1L | NORMAL | 없음 |
 | ≥ 0.1L | SUSPECT | 상태 배지 노랑 |
@@ -75,7 +77,7 @@
 
 - 대조마다 `reconciliation` 행 기록(`risk_score = min(diff/L, 1)`).
 - 이미 REVOKED인 크레덴셜은 대조하지 않는다.
-- 차단선 0.7L 이유: 3초 주기 동안의 증가분(약 12,000원)을 흡수해 최종 손실 < L 유지.
+- 차단선 0.7L 이유: 차단 뒤에도 집계 지연(2초)+폴링(2초) 동안 들어온 호출이 뒤늦게 잡힌다(5건/초 기준 약 15~20건). L=100이면 최종 < L 유지. L이 작으면(예 30) 최종이 L을 넘을 수 있다.
 
 ### F9 자동 대응
 BREACH 시 아래를 **순서대로** 수행하고 각 단계를 사고 타임라인에 시각과 함께 기록.
@@ -88,7 +90,7 @@ BREACH 시 아래를 **순서대로** 수행하고 각 단계를 사고 타임�
 - WIF 크레덴셜: 폐기 = 신뢰 바인딩 비활성화 + 캐시 토큰 파기 (설명용, 라이브 시연 안 함).
 
 ### F10 사고 기록
-- 사고 상세: 탐지 시각, 차단 시각, 소요 초, 손실액(차단 시점 diff), 한도, 폐기 키, 전환 키, 타임라인(단계, 시각, 결과).
+- 사고 상세: 탐지 시각, 차단 시각, 소요 초, 손실 호출 수 `loss_calls`(차단 시점 diff_calls, 폐기 후 최종값으로 재계산), 한도 `limit_calls`, 참고 금액 `loss_krw`/`limit_krw`, 폐기 키, 전환 키, 타임라인(단계, 시각, 결과).
 - 상태: `OPEN → ROTATED → RESOLVED`.
 
 ### F11 대시보드 API (프론트 계약)
@@ -97,7 +99,7 @@ BREACH 시 아래를 **순서대로** 수행하고 각 단계를 사고 타임�
 | 메서드·경로 | 용도 |
 |---|---|
 | `GET/POST /admin/credentials`, `DELETE /admin/credentials/{id}` | F1 |
-| `GET/PUT /admin/settings` | F2 (`loss_limit_krw`) |
+| `GET/PUT /admin/settings` | F2 (`unauthorized_call_limit`, 참고 `loss_limit_krw`) |
 | `GET/POST/DELETE /admin/cidrs` | F3 |
 | `GET/POST/DELETE /admin/tokens` | F4 |
 | `GET /admin/dashboard` | 현재 상태, 차액, 한도, 크레덴셜별 gateway/provider 누적 |
@@ -106,7 +108,7 @@ BREACH 시 아래를 **순서대로** 수행하고 각 단계를 사고 타임�
 | `GET /admin/incidents`, `GET /admin/incidents/{id}` | F10 |
 | `GET /admin/events?since=` | 경고·차단 알림 토스트용 |
 
-- 대시보드 응답 핵심 필드: `status`(NORMAL/SUSPECT/WARNING/BLOCKED/RECOVERED), `diff_krw`, `limit_krw`, `warn_at`, `block_at`, `gateway_cost_krw`, `provider_cost_krw`, `active_credential`.
+- 대시보드 응답 핵심 필드: `status`(NORMAL/SUSPECT/WARNING/BLOCKED/RECOVERED), `diff_calls`, `limit_calls`, `warn_at_calls`, `block_at_calls`, `gateway_calls`, `provider_calls`, `active_credential`. 금액(`diff_krw`, `limit_krw`, `*_cost_krw`)은 참고. 상세는 `docs/contract.md` D절.
 - 관리자 인증: PoC는 고정 `X-Admin-Key` 헤더 1개. `[가정]`
 
 ### F12 공격 시뮬레이터 (데모 전용)
@@ -160,10 +162,10 @@ NORMAL → SUSPECT → WARNING → BLOCKED → RECOVERED
 - [ ] 허용 대역 밖 호출이 403, 거부 로그에 출발 IP가 보인다
 - [ ] 정상 호출 중 두 선이 겹치고 diff ≈ 0, NORMAL
 - [ ] 공격 시작 후 10초 안에 SUSPECT, 약 17초에 BLOCKED
-- [ ] 차단 시점 손실 < 한도(100,000원), 공격 스크립트가 401로 종료
+- [ ] 최종 설명되지 않는 호출 수 < 한도(100건), 공격 스크립트가 401로 종료
 - [ ] 차단 직후 직원 호출이 같은 토큰으로 성공(예비키 사용)
 - [ ] 사고 상세에 탐지·차단 시각, 손실액, 폐기/전환 키가 표시
-- [ ] 한도를 50,000원으로 바꾸고 재시연하면 더 일찍 차단된다
+- [ ] 한도를 30건으로 바꾸고 재시연하면 더 일찍 차단된다
 - [ ] `/demo/reset` 후 처음부터 재실행 가능
 
 ## 7. 리스크
@@ -175,8 +177,8 @@ NORMAL → SUSPECT → WARNING → BLOCKED → RECOVERED
 - 대시보드 `status`는 ACTIVE 크레덴셜 중 최악 판정. 열린 incident가 있으면 BLOCKED, RESOLVED 후 10초간 RECOVERED, 이후 NORMAL.
 - 타임라인: DETECTED·REVOKE는 즉시, PROMOTE_STANDBY·NOTIFY_ADMIN·VERIFIED는 연출용 1초 간격(표시 시각일 뿐 실제 승격은 폐기 직후 DB에 즉시 반영).
 - 폐기 즉시 STANDBY 승격(직원 호출 503 방지). 검증은 승격 키로 Mock에 `max_tokens=1` 호출.
-- 손실액은 탐지 시점 차액으로 먼저 기록하고, 폐기 2.5초 후 공급자 최종 사용량으로 재계산(`공급자 - 게이트웨이`).
-- 대조는 별도 테이블 없이 워커가 매 틱 `usage_log` vs `provider_usage`로 계산. PROVIDER 테이블도 없고 `credential.provider` 문자열.
-- 통화는 원(KRW), 토큰당 0.4원. 허용 오차 5,000원 차감 후 한도 대비 10%/50%/70%에서 SUSPECT/WARNING/차단.
+- 손실 호출 수(`loss_calls`)는 탐지 시점 diff_calls로 먼저 기록하고, 폐기 2.5초 후 공급자 최종 호출 수로 재계산(`공급자 - 게이트웨이`). 금액 `loss_krw`도 같은 규칙(참고).
+- 대조는 별도 테이블 없이 워커가 매 틱 `usage_log` 행 수 vs `provider_usage.requests`로 계산. PROVIDER 테이블도 없고 `credential.provider` 문자열.
+- 판정은 호출 수 기준: 허용 오차 3건 차감 후 한도(기본 100건) 대비 10%/50%/70%에서 SUSPECT/WARNING/차단. 통화(원, 토큰당 0.4원)는 참고 표시.
 - 리허설: `scripts/rehearse.py`가 위 흐름을 자동 점검(PASS/FAIL).
 

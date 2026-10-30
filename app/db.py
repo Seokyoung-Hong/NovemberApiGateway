@@ -30,7 +30,7 @@ CREATE TABLE IF NOT EXISTS usage_log (
   status_code INTEGER, at REAL NOT NULL);                                -- at = epoch 초
 CREATE TABLE IF NOT EXISTS provider_usage (          -- 누적값 스냅샷
   id INTEGER PRIMARY KEY AUTOINCREMENT, credential_id INTEGER NOT NULL,
-  cost_krw REAL NOT NULL, tokens INTEGER NOT NULL, at REAL NOT NULL);
+  cost_krw REAL NOT NULL, tokens INTEGER NOT NULL, requests INTEGER NOT NULL DEFAULT 0, at REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_usage_cred ON usage_log(credential_id, at);
 CREATE INDEX IF NOT EXISTS ix_pu_cred ON provider_usage(credential_id, at);
 CREATE TABLE IF NOT EXISTS access_denied_log (
@@ -41,7 +41,7 @@ CREATE TABLE IF NOT EXISTS incident (
   trigger_type TEXT NOT NULL DEFAULT 'RECONCILIATION',                   -- RECONCILIATION|HONEYKEY
   status TEXT NOT NULL,                                                  -- OPEN|ROTATED|RESOLVED
   detected_at REAL NOT NULL, blocked_at REAL, resolved_at REAL,
-  loss_krw REAL, limit_krw REAL, new_credential_id INTEGER,
+  loss_krw REAL, limit_krw REAL, loss_calls INTEGER, limit_calls INTEGER, new_credential_id INTEGER,
   timeline TEXT NOT NULL DEFAULT '[]');                                  -- JSON [{at,step,detail,ok}]
 CREATE TABLE IF NOT EXISTS honeykey (
   id INTEGER PRIMARY KEY AUTOINCREMENT, value_hash TEXT NOT NULL UNIQUE, masked TEXT NOT NULL,
@@ -68,8 +68,9 @@ def get_conn() -> sqlite3.Connection:
 def init_db() -> None:
     with get_conn() as c:
         cols = [r[1] for r in c.execute("PRAGMA table_info(incident)")]
-        if cols and "trigger_type" not in cols:  # 구 스키마 DB: 데모 데이터이므로 전부 버리고 재생성
+        if cols and "limit_calls" not in cols:  # 구 스키마 DB: 데모 데이터이므로 전부 버리고 재생성
             for (t,) in c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
                 c.execute(f"DROP TABLE {t}")
         c.executescript(SCHEMA)
         c.execute("INSERT OR IGNORE INTO setting(key,value) VALUES('loss_limit_krw','100000')")
+        c.execute("INSERT OR IGNORE INTO setting(key,value) VALUES('unauthorized_call_limit','100')")

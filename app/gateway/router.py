@@ -12,7 +12,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app import vault
-from app.contract import ADMIN_KEY, DEMO_MODE, PROVIDERS, cost_krw, hash_token, mask_key
+from app.contract import (ADMIN_KEY, DEFAULT_LIMIT_CALLS, DEFAULT_LIMIT_KRW, DEMO_MODE, PROVIDERS, cost_krw,
+                          hash_token, mask_key)
 from app.db import get_conn
 
 router = APIRouter()
@@ -237,24 +238,30 @@ def delete_credential(cid: int):
     return {"ok": True}
 
 
+SETTING_DEFAULTS = {"unauthorized_call_limit": DEFAULT_LIMIT_CALLS, "loss_limit_krw": DEFAULT_LIMIT_KRW}
+
+
 @admin.get("/settings")
 def get_settings():
     with get_conn() as c:
-        r = c.execute("SELECT value FROM setting WHERE key='loss_limit_krw'").fetchone()
-    return {"loss_limit_krw": int(r["value"]) if r else 100_000}
+        rows = dict(c.execute("SELECT key,value FROM setting").fetchall())
+    return {k: int(rows.get(k, d)) for k, d in SETTING_DEFAULTS.items()}
 
 
 class SettingsIn(BaseModel):
-    loss_limit_krw: int
+    unauthorized_call_limit: Optional[int] = None
+    loss_limit_krw: Optional[int] = None
 
 
 @admin.put("/settings")
 def put_settings(b: SettingsIn):
-    if b.loss_limit_krw <= 0:
-        raise HTTPException(400, "loss_limit_krw must be > 0")
+    sent = b.model_dump(exclude_none=True)
+    for k, v in sent.items():
+        if v <= 0:
+            raise HTTPException(400, f"{k} must be > 0")
     with get_conn() as c:
-        c.execute("INSERT OR REPLACE INTO setting(key,value) VALUES('loss_limit_krw',?)", (str(b.loss_limit_krw),))
-    return {"loss_limit_krw": b.loss_limit_krw}
+        c.executemany("INSERT OR REPLACE INTO setting(key,value) VALUES(?,?)", [(k, str(v)) for k, v in sent.items()])
+    return get_settings()
 
 
 class CidrIn(BaseModel):

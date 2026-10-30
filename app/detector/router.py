@@ -9,9 +9,9 @@ import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from app import vault
-from app.contract import (ADMIN_KEY, ATTACK_MAX_TOKENS, ATTACK_RPS, BLOCK_RATIO, MOCK_USAGE_LAG_S,
-                          POLL_INTERVAL_S, PROVIDERS, WARN_RATIO, cost_krw, effective_diff, hash_token,
-                          judge, mask_key)
+from app.contract import (ADMIN_KEY, ATTACK_MAX_TOKENS, ATTACK_RPS, BLOCK_RATIO, DEFAULT_LIMIT_CALLS,
+                          LEAKED_KEY, MOCK_USAGE_LAG_S, POLL_INTERVAL_S, PROVIDERS, WARN_RATIO,
+                          effective_calls_diff, effective_diff, hash_token, judge, mask_key)
 from app.db import get_conn
 from app.gateway.router import _wif_cache, blocked_ips, reset_gen
 
@@ -39,6 +39,22 @@ def admin(x_admin_key: str = Header(None)):
 
 def limit_krw(c) -> float:
     return float(c.execute("SELECT value FROM setting WHERE key='loss_limit_krw'").fetchone()[0])
+
+
+def limit_calls(c) -> int:
+    r = c.execute("SELECT value FROM setting WHERE key='unauthorized_call_limit'").fetchone()
+    return int(r[0]) if r else DEFAULT_LIMIT_CALLS
+
+
+def calls(c, cid):
+    """(gateway 호출 수, provider 최신 스냅샷 호출 수). gateway는 공급자 집계와 같은 시점까지만 센다
+    (usage_log 중 at <= 스냅샷 시각 - MOCK_USAGE_LAG_S). 안 맞추면 직원 호출이 차액을 깎아 판정이 출렁인다."""
+    p = c.execute("SELECT requests,at FROM provider_usage WHERE credential_id=? ORDER BY id DESC LIMIT 1", (cid,)).fetchone()
+    if not p:
+        return 0, 0
+    g = c.execute("SELECT COUNT(*) FROM usage_log WHERE credential_id=? AND at<=?",
+                  (cid, p["at"] - MOCK_USAGE_LAG_S)).fetchone()[0]
+    return g, p["requests"]
 
 
 def event(c, kind, message, data=None):
@@ -79,18 +95,20 @@ async def tick(http):
     for cred in creds:
         u = (await http.get(f"{MOCK}/usage", params={"owner": cred["provider_ref"]})).json()
         with get_conn() as c:
-            c.execute("INSERT INTO provider_usage(credential_id,cost_krw,tokens,at) VALUES(?,?,?,?)",
-                      (cred["id"], u["cost_krw"], u["tokens"], time.time()))
+            c.execute("INSERT INTO provider_usage(credential_id,cost_krw,tokens,requests,at) VALUES(?,?,?,?,?)",
+                      (cred["id"], u["cost_krw"], u["tokens"], u.get("requests", 0), time.time()))
+            gc, pc = calls(c, cred["id"])
+            diff, lim = effective_calls_diff(pc, gc), limit_calls(c)
             g, p = costs(c, cred["id"])
-            diff, lim = effective_diff(p, g), limit_krw(c)
+            krw = (effective_diff(p, g), limit_krw(c))  # 참고 표시용
             v = judge(diff, lim)
             prev = state["judged"].get(cred["id"], "NORMAL")
             state["judged"][cred["id"]] = v
             if v in ("SUSPECT", "WARNING") and v != prev:
-                event(c, v, f"{cred['masked']} 설명되지 않는 사용액 {diff:,.0f}원 ({diff / lim:.0%})",
-                      {"credential_id": cred["id"], "diff_krw": diff})
+                event(c, v, f"{cred['masked']} 설명되지 않는 호출 {diff}건 ({diff / lim:.0%}, 참고 {krw[0]:,.0f}원)",
+                      {"credential_id": cred["id"], "diff_calls": diff, "diff_krw": krw[0]})
         if v == "BREACH":
-            await respond(http, cred, diff, lim)
+            await respond(http, cred, diff, lim, *krw)
     state["updated_at"] = time.time()
 
 
@@ -104,15 +122,17 @@ def save_tl(iid, tl, **cols):
         c.execute(f"UPDATE incident SET timeline=?{sets} WHERE id=?", (json.dumps(tl), *cols.values(), iid))
 
 
-async def respond(http, cred, diff, lim):
-    """BREACH 자동 대응. 탐지·폐기는 즉시(워커 락 안), 나머지는 백그라운드로 연출 지연. 크레덴셜당 incident 1개."""
+async def respond(http, cred, diff, lim, diff_krw, lim_krw):
+    """BREACH 자동 대응. 탐지·폐기는 즉시(워커 락 안), 나머지는 백그라운드로 연출 지연. 크레덴셜당 incident 1개.
+    diff/lim = 호출 수(판정 기준), diff_krw/lim_krw = 참고 금액."""
     with get_conn() as c:
         if c.execute("SELECT 1 FROM incident WHERE credential_id=?", (cred["id"],)).fetchone():
             return
         tl = [{"at": iso(time.time()), "step": "DETECTED", "ok": True,
-               "detail": f"설명되지 않는 사용액 {diff:,.0f}원 ≥ 차단선 {lim * BLOCK_RATIO:,.0f}원"}]
-        iid = c.execute("INSERT INTO incident(credential_id,status,detected_at,loss_krw,limit_krw,timeline) "
-                        "VALUES(?,?,?,?,?,?)", (cred["id"], "OPEN", time.time(), diff, lim, json.dumps(tl))).lastrowid
+               "detail": f"설명되지 않는 호출 {diff}건 ≥ 차단선 {lim * BLOCK_RATIO:g}건 (참고 {diff_krw:,.0f}원)"}]
+        iid = c.execute("INSERT INTO incident(credential_id,status,detected_at,loss_krw,limit_krw,loss_calls,limit_calls,"
+                        "timeline) VALUES(?,?,?,?,?,?,?,?)", (cred["id"], "OPEN", time.time(), diff_krw, lim_krw, diff,
+                                                              lim, json.dumps(tl))).lastrowid
     r = await http.post(f"{MOCK}/revoke", json={"owner": cred["provider_ref"]})
     tl.append({"at": iso(time.time()), "step": "REVOKE_PROVIDER_KEY", "detail": f"{cred['masked']} 공급자 폐기",
                "ok": r.status_code == 200})
@@ -144,7 +164,7 @@ async def recover(cred, iid, tl, diff, lim, sb):
     await asyncio.sleep(STEP_DELAY_S)
     step("NOTIFY_ADMIN", "관리자 통보(BLOCKED 이벤트)")
     with get_conn() as c:
-        event(c, "BLOCKED", f"{cred['masked']} 자동 차단. 손실 {diff:,.0f}원 / 한도 {lim:,.0f}원",
+        event(c, "BLOCKED", f"{cred['masked']} 자동 차단. 설명되지 않는 호출 {diff}건 / 한도 {lim}건",
               {"incident_id": iid, "credential_id": cred["id"], "new_credential_id": sb["id"] if sb else None})
     save_tl(iid, tl)
     if not sb:
@@ -172,29 +192,33 @@ async def final_loss(cred, iid):
     """폐기 후 집계 지연이 지나면 최종 손실(공급자-게이트웨이)로 갱신."""
     await asyncio.sleep(MOCK_USAGE_LAG_S + 0.5)
     async with httpx.AsyncClient(timeout=5) as http:
-        p = (await http.get(f"{MOCK}/usage", params={"owner": cred["provider_ref"]})).json()["cost_krw"]
+        u = (await http.get(f"{MOCK}/usage", params={"owner": cred["provider_ref"]})).json()
     with get_conn() as c:
         g, _ = costs(c, cred["id"])
-        c.execute("INSERT INTO provider_usage(credential_id,cost_krw,tokens,at) VALUES(?,?,?,?)",
-                  (cred["id"], p, int(p / cost_krw(1)), time.time()))
-        c.execute("UPDATE incident SET loss_krw=? WHERE id=?", (max(0.0, p - g), iid))
+        c.execute("INSERT INTO provider_usage(credential_id,cost_krw,tokens,requests,at) VALUES(?,?,?,?,?)",
+                  (cred["id"], u["cost_krw"], u["tokens"], u.get("requests", 0), time.time()))
+        gc, _ = calls(c, cred["id"])
+        c.execute("UPDATE incident SET loss_krw=?, loss_calls=? WHERE id=?",
+                  (max(0.0, u["cost_krw"] - g), max(0, u.get("requests", 0) - gc), iid))
 
 
 # ---------------- 대시보드 ----------------
 @router.get("/admin/dashboard", dependencies=[Depends(admin)])
 def dashboard():
     with get_conn() as c:
-        lim = limit_krw(c)
-        rows, worst, gt, pt, dt = [], "NORMAL", 0.0, 0.0, 0.0
+        lim, lc = limit_krw(c), limit_calls(c)
+        rows, worst, gt, pt, dt, gct, pct, dct = [], "NORMAL", 0.0, 0.0, 0.0, 0, 0, 0
         order = ["NORMAL", "SUSPECT", "WARNING", "BREACH"]
-        for cr in c.execute("SELECT * FROM credential ORDER BY id"):
+        for cr in c.execute("SELECT * FROM credential ORDER BY id").fetchall():
             g, p = costs(c, cr["id"])
-            d = effective_diff(p, g)
-            gt, pt, dt = gt + g, pt + p, dt + d
+            gc, pc = calls(c, cr["id"])
+            d, dc = effective_diff(p, g), effective_calls_diff(pc, gc)
+            gt, pt, dt, gct, pct, dct = gt + g, pt + p, dt + d, gct + gc, pct + pc, dct + dc
             if cr["status"] == "ACTIVE":
-                worst = max(worst, judge(d, lim), key=order.index)
+                worst = max(worst, judge(dc, lc), key=order.index)
             rows.append({k: cr[k] for k in ("id", "provider", "auth_mode", "role", "status", "masked")}
-                        | {"gateway_cost_krw": g, "provider_cost_krw": p, "diff_krw": d})
+                        | {"gateway_cost_krw": g, "provider_cost_krw": p, "diff_krw": d,
+                           "gateway_calls": gc, "provider_calls": pc, "diff_calls": dc})
         inc = c.execute("SELECT * FROM incident WHERE trigger_type!='HONEYKEY' ORDER BY id DESC LIMIT 1").fetchone()
         status = "WARNING" if worst == "BREACH" else worst  # BREACH는 워커가 곧 BLOCKED로 바꾼다
         if inc and inc["status"] != "RESOLVED":
@@ -209,6 +233,8 @@ def dashboard():
                         "WHERE role='PRIMARY' AND status='ACTIVE' ORDER BY id LIMIT 1").fetchone()
     return {"status": status, "limit_krw": lim, "warn_at_krw": lim * WARN_RATIO, "block_at_krw": lim * BLOCK_RATIO,
             "diff_krw": dt, "gateway_cost_krw": gt, "provider_cost_krw": pt,
+            "limit_calls": lc, "warn_at_calls": lc * WARN_RATIO, "block_at_calls": lc * BLOCK_RATIO,
+            "diff_calls": dct, "gateway_calls": gct, "provider_calls": pct,
             "active_credential": dict(act) if act else None, "credentials": rows,
             "attack_running": attack_running(), "incident_id": inc["id"] if inc and status in ("BLOCKED", "RECOVERED") else None,
             "updated_at": iso(state["updated_at"] or time.time()), "honeykey_hits": hits,
@@ -221,15 +247,16 @@ def timeseries(range: int = 300):
     start = now - range
     with get_conn() as c:
         ul = c.execute("SELECT at,cost_krw FROM usage_log ORDER BY at").fetchall()
-        pu = c.execute("SELECT credential_id,at,cost_krw FROM provider_usage ORDER BY at").fetchall()
+        pu = c.execute("SELECT credential_id,at,cost_krw,requests FROM provider_usage ORDER BY at").fetchall()
     points, gi, pi, g, last = [], 0, 0, 0.0, {}
     t = start - start % 2
     while t <= now + 2:  # ponytail: 버킷마다 앞에서부터 누적 스캔. 데이터가 커지면 SQL 집계로.
         while gi < len(ul) and ul[gi]["at"] <= t:
             g += ul[gi]["cost_krw"]; gi += 1
         while pi < len(pu) and pu[pi]["at"] <= t:
-            last[pu[pi]["credential_id"]] = pu[pi]["cost_krw"]; pi += 1
-        points.append({"t": iso(t), "gateway_krw": g, "provider_krw": sum(last.values())})
+            last[pu[pi]["credential_id"]] = (pu[pi]["cost_krw"], pu[pi]["requests"]); pi += 1
+        points.append({"t": iso(t), "gateway_krw": g, "provider_krw": sum(v[0] for v in last.values()),
+                       "gateway_calls": gi, "provider_calls": sum(v[1] for v in last.values())})
         t += 2
     return {"points": points}
 
@@ -240,7 +267,8 @@ def incident_json(c, r):
             "credential_masked": m(r["credential_id"]), "detected_at": iso(r["detected_at"]),
             "blocked_at": iso(r["blocked_at"]), "resolved_at": iso(r["resolved_at"]),
             "duration_s": round(r["blocked_at"] - r["detected_at"], 3) if r["blocked_at"] else None,
-            "loss_krw": r["loss_krw"], "limit_krw": r["limit_krw"], "new_credential_id": r["new_credential_id"],
+            "loss_krw": r["loss_krw"], "limit_krw": r["limit_krw"],
+            "loss_calls": r["loss_calls"], "limit_calls": r["limit_calls"], "new_credential_id": r["new_credential_id"],
             "new_credential_masked": m(r["new_credential_id"]), "timeline": json.loads(r["timeline"])}
 
 
@@ -343,11 +371,12 @@ async def demo_reset():
                 c.execute(f"DELETE FROM {t}")
             c.execute("DELETE FROM sqlite_sequence")
             c.execute("INSERT INTO setting(key,value) VALUES('loss_limit_krw','100000')")
+            c.execute("INSERT INTO setting(key,value) VALUES('unauthorized_call_limit',?)", (str(DEFAULT_LIMIT_CALLS),))
             c.executemany("INSERT INTO allowed_cidr(cidr,label) VALUES(?,?)",
                           [("127.0.0.1/32", "INTERNAL"), ("::1/128", "INTERNAL"),
                            ("10.0.0.0/16", "INTERNAL"), ("10.8.0.0/24", "VPN")])
             for name, role in (("K1", "PRIMARY"), ("S1", "STANDBY")):
-                key = f"sk-mock-{name}-{secrets.token_hex(4)}"
+                key = LEAKED_KEY if name == "K1" else f"sk-mock-{name}-{secrets.token_hex(4)}"
                 c.execute("INSERT INTO credential(provider,auth_mode,role,secret_enc,masked,provider_ref,created_at) "
                           "VALUES('mock','API_KEY',?,?,?,?,?)", (role, vault.encrypt(key), mask_key(key), key, now))
             c.execute("INSERT INTO credential(provider,auth_mode,role,masked,audience,provider_ref,created_at) "
