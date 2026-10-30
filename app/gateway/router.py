@@ -131,6 +131,14 @@ async def chat_completions(request: Request, authorization: str = Header(""),
         return _deny(403, "ip_blocked", ip, token)
     if not _ip_allowed(ip, cidrs):
         return _deny(403, "ip_not_allowed", ip, token)
+    if not tok and token.count(".") == 2 and not token.startswith("nvm-"):  # 직원 측 WIF(OIDC JWT) → 서비스
+        from app import wif_inbound  # 지연 import(순환 방지)
+        try:
+            tok = {"status": "ACTIVE", "service_id": wif_inbound.verify_jwt(token, ip)}
+        except wif_inbound.WifError as e:
+            return _deny(401, e.reason, ip, e.sub)  # token_masked = 마스킹한 sub(JWT 원문 미저장)
+        with get_conn() as c:
+            svc = c.execute("SELECT * FROM service WHERE id=?", (tok["service_id"],)).fetchone()
     if not tok or tok["status"] != "ACTIVE":
         return _deny(401, "invalid_token", ip, token)
     if not svc or svc["status"] != "ACTIVE":

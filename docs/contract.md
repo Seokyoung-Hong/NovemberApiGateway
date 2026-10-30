@@ -128,3 +128,19 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
 - OpenAI: 키 = 프로젝트(`OPENAI_PROJECT_ID`, 기본 proj_xkSCJaCHHKA3GEm5bEm02pHJ) 서비스 계정, Admin 키 `.env`의 `OPENAI_ADMIN_KEY`. `provider_ref = key_id|service_account_id|project_id`. 사용량 `GET /v1/organization/usage/completions?bucket_width=1m&group_by=api_key_id&api_key_ids=<key_id>`, 어댑터가 15초 캐시. 중계 `https://api.openai.com/v1/chat/completions`, 모델 기본 gpt-4o-mini, 비용은 토큰 × 상수($0.15/$0.60 per 1M, 근사). `/live` 청중 페이지는 OpenAI 키를 지원하지 않는다(`data/live_key.json`은 OpenRouter PRIMARY만 기록).
 - 시드 한도: reset-openrouter·reset-openai 모두 `unauthorized_call_limit`=100. 비율은 실제 공급자 0.05/0.2/0.35.
 - 최종 손실 재계산: 폐기 `revoke_lag_s + lag_s` 후(OpenAI 약 7분). `loss_calls = max(정렬 차이, 확실 유출)`, 오차 미차감.
+
+## J. 직원 측 WIF(OIDC)
+직원/서비스가 장기 토큰 대신 IdP가 서명한 단기 JWT(OIDC ID 토큰)로 게이트웨이에 인증한다. 구현 `app/wif_inbound.py`, 테이블 `trusted_identity`.
+- 중계 분기: 허니키 → IP 차단 → **IP 허용 검사** 뒤, Bearer 값이 점으로 나뉜 3조각이고 `nvm-`로 시작하지 않으면 JWT 경로. 통과하면 매핑된 service로 기존 경로(service ACTIVE 검사·중계·usage_log·탐지) 그대로.
+- 검증: `alg`는 **RS256만**(none·HS256 거부). `iss`로 신뢰 규칙 조회 → 헤더 `kid`로 JWKS 키 선택·서명 검증 → `exp`/`nbf` 30초 여유 → `aud` = 규칙 `audience`(없으면 setting `wif_audience`, 기본 `november-gateway`) → `sub`가 `subject_pattern`(fnmatch 글롭)과 일치.
+  외부 JWKS는 규칙의 `jwks_uri`를 httpx로 조회해 5분 캐시. 로컬 IdP issuer는 프로세스 내 키 직접 사용.
+- 거부: 401 `{"error":"wif_invalid_signature|wif_expired|wif_audience_mismatch|wif_untrusted_identity|wif_malformed"}`. `access_denied_log` + `event(ACCESS_DENIED)` 기록, `token_masked` = 마스킹한 `sub`(JWT 원문 미저장). 허용 밖 IP는 JWT여도 403 `ip_not_allowed`.
+- `GET /admin/trusted-identities` → `[{id,issuer,subject_pattern,audience,service_id,jwks_uri,created_at}]`
+- `POST /admin/trusted-identities` `{issuer, subject_pattern, audience?, service_id | service_name, jwks_uri?}` → 위 항목 1개(서비스 없으면 404). `DELETE /admin/trusted-identities/{id}` → `{"ok":true}`(없으면 404).
+- `GET /admin/wif/settings` → `{"wif_audience"}`, `PUT` 같은 형태(빈 값 400).
+- 신뢰 규칙 예시(GitHub Actions): `{"issuer":"https://token.actions.githubusercontent.com","subject_pattern":"repo:november/*:ref:refs/heads/main","audience":"november-gateway","service_name":"직원A","jwks_uri":"https://token.actions.githubusercontent.com/.well-known/jwks"}`
+- 데모 로컬 IdP(`DEMO_MODE`만): 시작 시 RSA 키쌍을 메모리에 생성(kid `local-1`), issuer = 환경변수 `IDP_ISSUER`(기본 `http://localhost:8000/idp`).
+  `GET /idp/.well-known/jwks.json` → `{keys:[{kty,use,alg,kid,n,e}]}`, `POST /idp/token` `{sub, audience?, ttl_s?(기본 600, 1~3600)}` → `{token, expires_in}`.
+  `POST /demo/wif/seed` → 규칙(issuer=로컬 IdP, `repo:november/*` → `직원A`) 1개, 멱등(재실행 시 service_id만 갱신). `직원A` 없으면 404 "먼저 /demo/reset".
+  `POST /demo/wif/token` `{sub?}`(기본 `repo:november/app:ref:refs/heads/main`) → `{token, expires_in}`.
+- 한계: 실제 외부 IdP(Google/GitHub) 연동은 미검증(jwks_uri 조회만 구현), 키 교체 자동화 없음(새 kid는 캐시 5분 만료 후 반영), 로컬 IdP 키는 재시작 시 바뀜(기존 토큰 무효), `/demo/reset`은 `trusted_identity`를 지우지 않음(리셋 후 `/demo/wif/seed` 재실행 필요), JWKS 조회는 동기(최대 5초), `jti` 재사용 방지·토큰 폐기 목록 없음(짧은 TTL로 완화), IP 거부 로그의 `token_masked`는 기존 방식(JWT 앞 3자·뒤 4자).
