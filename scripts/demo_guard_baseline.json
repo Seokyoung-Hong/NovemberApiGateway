@@ -1,0 +1,916 @@
+{
+ "mock": {
+  "GET /admin/access-denied?limit=5": {
+   "shape": {
+    "__list__": {
+     "at": "str",
+     "id": "number",
+     "reason": "str",
+     "source_ip": "str",
+     "token_masked": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/cidrs": {
+   "shape": {
+    "__list__": {
+     "cidr": "str",
+     "id": "number",
+     "label": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/credentials": {
+   "shape": {
+    "__list__": {
+     "audience": "str",
+     "auth_mode": "str",
+     "created_at": "str",
+     "id": "number",
+     "masked": "str",
+     "provider": "str",
+     "provider_ref_masked": "str",
+     "replaced_by_id": "number",
+     "role": "str",
+     "status": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/dashboard": {
+   "shape": {
+    "active_credential": {
+     "auth_mode": "str",
+     "id": "number",
+     "masked": "str",
+     "provider": "str"
+    },
+    "attack_running": "bool",
+    "block_at_calls": "number",
+    "block_at_krw": "number",
+    "blocked_ips": {
+     "__list__": null
+    },
+    "certain_diff_calls": "number",
+    "credentials": {
+     "__list__": {
+      "auth_mode": "str",
+      "calls_estimated": "bool",
+      "certain_diff_calls": "number",
+      "diff_calls": "number",
+      "diff_krw": "number",
+      "diff_usd": "number",
+      "gateway_calls": "number",
+      "gateway_cost_krw": "number",
+      "id": "number",
+      "masked": "str",
+      "provider": "str",
+      "provider_calls": "number",
+      "provider_cost_krw": "number",
+      "revocation": "str",
+      "role": "str",
+      "status": "str",
+      "value": "number"
+     }
+    },
+    "detection": {
+     "block": "number",
+     "diff_calls": "number",
+     "legacy": "bool",
+     "limit": "number",
+     "mode": "str",
+     "provider_calls": "number",
+     "suspect": "number",
+     "tolerance_calls": "number",
+     "unit": "str",
+     "value": "number",
+     "warn": "number"
+    },
+    "diff_calls": "number",
+    "diff_krw": "number",
+    "diff_usd": "number",
+    "gateway_calls": "number",
+    "gateway_cost_krw": "number",
+    "honeykey_hits": {
+     "__list__": {
+      "at": "str",
+      "honeykey_masked": "str",
+      "planted_at": "str",
+      "source_ip": "str"
+     }
+    },
+    "incident_id": "number",
+    "ip_policy": "str",
+    "limit_calls": "number",
+    "limit_krw": "number",
+    "provider_calls": "number",
+    "provider_cost_krw": "number",
+    "status": "str",
+    "updated_at": "str",
+    "warn_at_calls": "number",
+    "warn_at_krw": "number"
+   },
+   "status": 200
+  },
+  "GET /admin/events?since_id=0": {
+   "shape": {
+    "events": {
+     "__list__": {
+      "at": "str",
+      "data": {
+       "certain_diff_calls": "number",
+       "credential_id": "number",
+       "diff_calls": "number",
+       "diff_krw": "number",
+       "honeykey_id": "number",
+       "incident_id": "number",
+       "new_credential_id": "number",
+       "planted_at": "str",
+       "reason": "str",
+       "source_ip": "str",
+       "token_masked": "str"
+      },
+      "id": "number",
+      "kind": "str",
+      "message": "str"
+     }
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/honeykeys": {
+   "shape": {
+    "__list__": {
+     "created_at": "str",
+     "hits": "number",
+     "id": "number",
+     "masked": "str",
+     "planted_at": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/incidents": {
+   "shape": {
+    "__list__": {
+     "block_label": "str",
+     "blocked_at": "str",
+     "calls_estimated": "bool",
+     "credential_id": "number",
+     "credential_masked": "str",
+     "detected_at": "str",
+     "duration_s": "number",
+     "id": "number",
+     "limit_calls": "number",
+     "limit_krw": "number",
+     "loss_calls": "number",
+     "loss_krw": "number",
+     "new_credential_id": "number",
+     "new_credential_masked": "str",
+     "resolved_at": "str",
+     "status": "str",
+     "timeline": {
+      "__list__": {
+       "at": "str",
+       "block_label": "str",
+       "detail": "str",
+       "ok": "bool",
+       "step": "str"
+      }
+     },
+     "trigger_type": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/incidents/{id}": {
+   "shape": {
+    "block_label": "str",
+    "blocked_at": "str",
+    "calls_estimated": "bool",
+    "credential_id": "number",
+    "credential_masked": "str",
+    "detected_at": "str",
+    "duration_s": "number",
+    "id": "number",
+    "limit_calls": "number",
+    "limit_krw": "number",
+    "loss_calls": "number",
+    "loss_krw": "number",
+    "new_credential_id": "number",
+    "new_credential_masked": "str",
+    "resolved_at": "str",
+    "status": "str",
+    "timeline": {
+     "__list__": {
+      "at": "str",
+      "block_label": "str",
+      "detail": "str",
+      "ok": "bool",
+      "step": "str"
+     }
+    },
+    "trigger_type": "str"
+   },
+   "status": 200
+  },
+  "GET /admin/services": {
+   "shape": {
+    "__list__": {
+     "id": "number",
+     "name": "str",
+     "status": "str",
+     "tokens": {
+      "__list__": {
+       "created_at": "str",
+       "id": "number",
+       "status": "str",
+       "token_masked": "str"
+      }
+     }
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/settings": {
+   "shape": {
+    "loss_limit_krw": "number",
+    "unauthorized_call_limit": "number"
+   },
+   "status": 200
+  },
+  "GET /admin/timeseries?range=300": {
+   "shape": {
+    "points": {
+     "__list__": {
+      "gateway_calls": "number",
+      "gateway_krw": "number",
+      "provider_calls": "number",
+      "provider_krw": "number",
+      "t": "str"
+     }
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/trusted-identities": {
+   "shape": {
+    "__list__": {
+     "audience": "null",
+     "created_at": "str",
+     "id": "number",
+     "issuer": "str",
+     "jwks_uri": "null",
+     "service_id": "number",
+     "subject_pattern": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/usage/forecast": {
+   "shape": {
+    "budget": {
+     "hours_to_budget": "null",
+     "monthly_budget_krw": "null"
+    },
+    "method": "str",
+    "note": "str",
+    "per_service": {
+     "__list__": {
+      "name": "str",
+      "projected_month_cost_krw": "number",
+      "rate_cost_krw_per_hour": "number",
+      "service_id": "number"
+     }
+    },
+    "projected": {
+     "end_of_day_cost_krw": "number",
+     "end_of_month_cost_krw": "number"
+    },
+    "rate_per_hour": {
+     "calls": "number",
+     "cost_krw": "number",
+     "tokens": "number"
+    },
+    "window_hours": "number"
+   },
+   "status": 200
+  },
+  "GET /admin/usage/summary?range=day": {
+   "shape": {
+    "from": "str",
+    "range": "str",
+    "services": {
+     "__list__": {
+      "calls": "number",
+      "cost_krw": "number",
+      "estimated_cost_krw": "number",
+      "input_tokens": "number",
+      "models": {
+       "__list__": {
+        "calls": "number",
+        "cost_krw": "number",
+        "estimated": "bool",
+        "estimated_cost_krw": "number",
+        "input_tokens": "number",
+        "model": "str",
+        "output_tokens": "number"
+       }
+      },
+      "name": "str",
+      "output_tokens": "number",
+      "service_id": "number"
+     }
+    },
+    "to": "str",
+    "total": {
+     "calls": "number",
+     "cost_krw": "number",
+     "estimated_cost_krw": "number",
+     "input_tokens": "number",
+     "output_tokens": "number"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/usage/timeseries?range=day&bucket=hour": {
+   "shape": {
+    "bucket": "str",
+    "from": "str",
+    "range": "str",
+    "services": {
+     "__list__": {
+      "name": "str",
+      "points": {
+       "__list__": {
+        "calls": "number",
+        "cost_krw": "number",
+        "t": "str",
+        "tokens": "number"
+       }
+      },
+      "service_id": "number"
+     }
+    },
+    "to": "str"
+   },
+   "status": 200
+  },
+  "GET /live/config": {
+   "shape": {
+    "key": "str",
+    "model": "str"
+   },
+   "status": 200
+  },
+  "GET /live/stats": {
+   "shape": {
+    "calls": "number",
+    "key_status": "str",
+    "participants": "number",
+    "updated_at": "number"
+   },
+   "status": 200
+  },
+  "POST /demo/attack/start": {
+   "shape": {
+    "attack_running": "bool"
+   },
+   "status": 200
+  },
+  "POST /demo/honeypot/hit": {
+   "shape": {
+    "planted_at": "str",
+    "response": {
+     "error": "str"
+    },
+    "source_ip": "str",
+    "status_code": "number"
+   },
+   "status": 200
+  },
+  "POST /demo/reset": {
+   "shape": {
+    "honeykeys": {
+     "공개 저장소 .env.example": "str",
+     "사내 위키 설정 예시": "str"
+    },
+    "note": "str",
+    "tokens": {
+     "userA": "str",
+     "userB": "str"
+    }
+   },
+   "status": 200
+  },
+  "POST /demo/wif/seed": {
+   "shape": {
+    "audience": "null",
+    "created_at": "str",
+    "id": "number",
+    "issuer": "str",
+    "jwks_uri": "null",
+    "service_id": "number",
+    "subject_pattern": "str"
+   },
+   "status": 200
+  },
+  "POST /demo/wif/token": {
+   "shape": {
+    "expires_in": "number",
+    "token": "str"
+   },
+   "status": 200
+  },
+  "POST /live/chat": {
+   "shape": {
+    "reply": "str",
+    "status": "number"
+   },
+   "status": 200
+  },
+  "POST /v1/chat/completions": {
+   "shape": {
+    "choices": {
+     "__list__": {
+      "finish_reason": "str",
+      "index": "number",
+      "message": {
+       "content": "str",
+       "role": "str"
+      }
+     }
+    },
+    "created": "number",
+    "id": "str",
+    "model": "str",
+    "object": "str",
+    "usage": {
+     "completion_tokens": "number",
+     "prompt_tokens": "number",
+     "total_tokens": "number"
+    }
+   },
+   "status": 200
+  }
+ },
+ "vllm": {
+  "GET /admin/access-denied?limit=5": {
+   "shape": {
+    "__list__": {
+     "at": "str",
+     "id": "number",
+     "reason": "str",
+     "source_ip": "str",
+     "token_masked": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/cidrs": {
+   "shape": {
+    "__list__": {
+     "cidr": "str",
+     "id": "number",
+     "label": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/credentials": {
+   "shape": {
+    "__list__": {
+     "audience": "null",
+     "auth_mode": "str",
+     "created_at": "str",
+     "id": "number",
+     "masked": "str",
+     "provider": "str",
+     "provider_ref_masked": "str",
+     "replaced_by_id": "number",
+     "role": "str",
+     "status": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/dashboard": {
+   "shape": {
+    "active_credential": {
+     "auth_mode": "str",
+     "id": "number",
+     "masked": "str",
+     "provider": "str"
+    },
+    "attack_running": "bool",
+    "block_at_calls": "number",
+    "block_at_krw": "number",
+    "blocked_ips": {
+     "__list__": null
+    },
+    "certain_diff_calls": "number",
+    "credentials": {
+     "__list__": {
+      "auth_mode": "str",
+      "calls_estimated": "bool",
+      "certain_diff_calls": "number",
+      "diff_calls": "number",
+      "diff_krw": "number",
+      "diff_usd": "number",
+      "gateway_calls": "number",
+      "gateway_cost_krw": "number",
+      "id": "number",
+      "masked": "str",
+      "provider": "str",
+      "provider_calls": "number",
+      "provider_cost_krw": "number",
+      "revocation": "str",
+      "role": "str",
+      "status": "str",
+      "value": "number"
+     }
+    },
+    "detection": {
+     "block": "number",
+     "diff_calls": "number",
+     "legacy": "bool",
+     "limit": "number",
+     "mode": "str",
+     "provider_calls": "number",
+     "suspect": "number",
+     "tolerance_calls": "number",
+     "unit": "str",
+     "value": "number",
+     "warn": "number"
+    },
+    "diff_calls": "number",
+    "diff_krw": "number",
+    "diff_usd": "number",
+    "gateway_calls": "number",
+    "gateway_cost_krw": "number",
+    "honeykey_hits": {
+     "__list__": {
+      "at": "str",
+      "honeykey_masked": "str",
+      "planted_at": "str",
+      "source_ip": "str"
+     }
+    },
+    "incident_id": "number",
+    "ip_policy": "str",
+    "limit_calls": "number",
+    "limit_krw": "number",
+    "provider_calls": "number",
+    "provider_cost_krw": "number",
+    "status": "str",
+    "updated_at": "str",
+    "warn_at_calls": "number",
+    "warn_at_krw": "number"
+   },
+   "status": 200
+  },
+  "GET /admin/events?since_id=0": {
+   "shape": {
+    "events": {
+     "__list__": {
+      "at": "str",
+      "data": {
+       "certain_diff_calls": "number",
+       "credential_id": "number",
+       "diff_calls": "number",
+       "diff_krw": "number",
+       "honeykey_id": "number",
+       "incident_id": "number",
+       "new_credential_id": "number",
+       "planted_at": "str",
+       "reason": "str",
+       "source_ip": "str",
+       "token_masked": "str"
+      },
+      "id": "number",
+      "kind": "str",
+      "message": "str"
+     }
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/honeykeys": {
+   "shape": {
+    "__list__": {
+     "created_at": "str",
+     "hits": "number",
+     "id": "number",
+     "masked": "str",
+     "planted_at": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/incidents": {
+   "shape": {
+    "__list__": {
+     "block_label": "str",
+     "blocked_at": "str",
+     "calls_estimated": "bool",
+     "credential_id": "number",
+     "credential_masked": "str",
+     "detected_at": "str",
+     "duration_s": "number",
+     "id": "number",
+     "limit_calls": "number",
+     "limit_krw": "number",
+     "loss_calls": "number",
+     "loss_krw": "number",
+     "new_credential_id": "number",
+     "new_credential_masked": "str",
+     "resolved_at": "str",
+     "status": "str",
+     "timeline": {
+      "__list__": {
+       "at": "str",
+       "block_label": "str",
+       "detail": "str",
+       "ok": "bool",
+       "step": "str"
+      }
+     },
+     "trigger_type": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/incidents/{id}": {
+   "shape": {
+    "block_label": "str",
+    "blocked_at": "str",
+    "calls_estimated": "bool",
+    "credential_id": "number",
+    "credential_masked": "str",
+    "detected_at": "str",
+    "duration_s": "number",
+    "id": "number",
+    "limit_calls": "number",
+    "limit_krw": "number",
+    "loss_calls": "number",
+    "loss_krw": "number",
+    "new_credential_id": "number",
+    "new_credential_masked": "str",
+    "resolved_at": "str",
+    "status": "str",
+    "timeline": {
+     "__list__": {
+      "at": "str",
+      "block_label": "str",
+      "detail": "str",
+      "ok": "bool",
+      "step": "str"
+     }
+    },
+    "trigger_type": "str"
+   },
+   "status": 200
+  },
+  "GET /admin/services": {
+   "shape": {
+    "__list__": {
+     "id": "number",
+     "name": "str",
+     "status": "str",
+     "tokens": {
+      "__list__": {
+       "created_at": "str",
+       "id": "number",
+       "status": "str",
+       "token_masked": "str"
+      }
+     }
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/settings": {
+   "shape": {
+    "loss_limit_krw": "number",
+    "unauthorized_call_limit": "number"
+   },
+   "status": 200
+  },
+  "GET /admin/timeseries?range=300": {
+   "shape": {
+    "points": {
+     "__list__": {
+      "gateway_calls": "number",
+      "gateway_krw": "number",
+      "provider_calls": "number",
+      "provider_krw": "number",
+      "t": "str"
+     }
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/trusted-identities": {
+   "shape": {
+    "__list__": {
+     "audience": "null",
+     "created_at": "str",
+     "id": "number",
+     "issuer": "str",
+     "jwks_uri": "null",
+     "service_id": "number",
+     "subject_pattern": "str"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/usage/forecast": {
+   "shape": {
+    "budget": {
+     "hours_to_budget": "null",
+     "monthly_budget_krw": "null"
+    },
+    "method": "str",
+    "note": "str",
+    "per_service": {
+     "__list__": {
+      "name": "str",
+      "projected_month_cost_krw": "number",
+      "rate_cost_krw_per_hour": "number",
+      "service_id": "number"
+     }
+    },
+    "projected": {
+     "end_of_day_cost_krw": "number",
+     "end_of_month_cost_krw": "number"
+    },
+    "rate_per_hour": {
+     "calls": "number",
+     "cost_krw": "number",
+     "tokens": "number"
+    },
+    "window_hours": "number"
+   },
+   "status": 200
+  },
+  "GET /admin/usage/summary?range=day": {
+   "shape": {
+    "from": "str",
+    "range": "str",
+    "services": {
+     "__list__": {
+      "calls": "number",
+      "cost_krw": "number",
+      "estimated_cost_krw": "number",
+      "input_tokens": "number",
+      "models": {
+       "__list__": {
+        "calls": "number",
+        "cost_krw": "number",
+        "estimated": "bool",
+        "estimated_cost_krw": "number",
+        "input_tokens": "number",
+        "model": "str",
+        "output_tokens": "number"
+       }
+      },
+      "name": "str",
+      "output_tokens": "number",
+      "service_id": "number"
+     }
+    },
+    "to": "str",
+    "total": {
+     "calls": "number",
+     "cost_krw": "number",
+     "estimated_cost_krw": "number",
+     "input_tokens": "number",
+     "output_tokens": "number"
+    }
+   },
+   "status": 200
+  },
+  "GET /admin/usage/timeseries?range=day&bucket=hour": {
+   "shape": {
+    "bucket": "str",
+    "from": "str",
+    "range": "str",
+    "services": {
+     "__list__": {
+      "name": "str",
+      "points": {
+       "__list__": {
+        "calls": "number",
+        "cost_krw": "number",
+        "t": "str",
+        "tokens": "number"
+       }
+      },
+      "service_id": "number"
+     }
+    },
+    "to": "str"
+   },
+   "status": 200
+  },
+  "GET /live/config": {
+   "shape": {
+    "key": "str",
+    "model": "str"
+   },
+   "status": 200
+  },
+  "GET /live/stats": {
+   "shape": {
+    "calls": "number",
+    "key_status": "str",
+    "participants": "number",
+    "updated_at": "number"
+   },
+   "status": 200
+  },
+  "POST /demo/attack/start": {
+   "shape": {
+    "attack_running": "bool"
+   },
+   "status": 200
+  },
+  "POST /demo/honeypot/hit": {
+   "shape": {
+    "planted_at": "str",
+    "response": {
+     "error": "str"
+    },
+    "source_ip": "str",
+    "status_code": "number"
+   },
+   "status": 200
+  },
+  "POST /demo/reset": {
+   "shape": {
+    "honeykeys": {
+     "공개 저장소 .env.example": "str",
+     "사내 위키 설정 예시": "str"
+    },
+    "leaked_key": "str",
+    "note": "str",
+    "tokens": {
+     "userA": "str",
+     "userB": "str"
+    }
+   },
+   "status": 200
+  },
+  "POST /demo/wif/seed": {
+   "shape": {
+    "audience": "null",
+    "created_at": "str",
+    "id": "number",
+    "issuer": "str",
+    "jwks_uri": "null",
+    "service_id": "number",
+    "subject_pattern": "str"
+   },
+   "status": 200
+  },
+  "POST /demo/wif/token": {
+   "shape": {
+    "expires_in": "number",
+    "token": "str"
+   },
+   "status": 200
+  },
+  "POST /live/chat": {
+   "shape": {
+    "reply": "str",
+    "status": "number"
+   },
+   "status": 200
+  },
+  "POST /v1/chat/completions": {
+   "shape": {
+    "choices": {
+     "__list__": {
+      "finish_reason": "str",
+      "index": "number",
+      "message": {
+       "content": "str",
+       "role": "str"
+      }
+     }
+    },
+    "id": "str",
+    "model": "str",
+    "object": "str",
+    "usage": {
+     "completion_tokens": "number",
+     "prompt_tokens": "number",
+     "total_tokens": "number"
+    }
+   },
+   "status": 200
+  }
+ }
+}

@@ -48,11 +48,11 @@ _mf = None
 
 
 def _fernets() -> MultiFernet:
-    """[현재 키, 구 기본 키]. kms 모드에서는 키 파일을 만들지 않는다(VAULT_KEY가 있을 때만 현재 키로 사용)."""
+    """[현재 키, 구 기본 키]. kms 모드에서는 키 파일을 새로 만들지 않는다(있으면 읽어 기존 fernet 행을 복호화)."""
     global _mf
     if _mf is None:
         cur = os.getenv("VAULT_KEY")
-        keys = [cur.encode()] if cur else ([] if BACKEND == "kms" else [_local_key()])
+        keys = [cur.encode()] if cur else ([] if BACKEND == "kms" and not os.path.exists(KEY_FILE) else [_local_key()])
         keys.append(os.getenv("VAULT_KEY_LEGACY", "november-demo-vault").encode())
         _mf = MultiFernet([_fernet(k) for k in keys])
     return _mf
