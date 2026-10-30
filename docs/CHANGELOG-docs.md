@@ -61,3 +61,4 @@
 - 2026-10-31 vLLM 공급자: `vllm` 어댑터·`/demo/reset-vllm`·공격 시뮬레이터 공급자별 대상(openrouter·openai 409)·`/live/chat` `sk-vllm-` 직접 전달 추가. contract M절, architecture P4, demo-scenario·frontend-handoff 표 갱신.
 
 | architecture.md 외 | vLLM(자체 GPU) 구성이 실제 아키텍처 그림에 들어갈 수 있게 서술됨 | vLLM을 "해커톤 데모 전용, 아키텍처 그림 제외"로 표기하고 architecture.md 컴포넌트 표에서 P4 행을 제거, 2-6절·그림 작성 가이드에 제외 규칙 추가 |
+| architecture.md | 구간별 보안 프로토콜 서술 없음 | 5-1절 "통신 구간별 보안 프로토콜" 표(8개 구간)와 그림 작성 가이드의 구간 라벨 항목 추가 |
