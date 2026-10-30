@@ -35,7 +35,7 @@ def _token_cost_usd(u: dict) -> float:
     return (u.get("prompt_tokens") or 0) * PRICE_IN + (u.get("completion_tokens") or 0) * PRICE_OUT
 
 
-async def _probe(self, http, cred):
+async def _probe(self, http, cred, on_call=None):
     """폐기 효과 확인: 그 키로 chat_url에 max_tokens=1 호출. 401/403=True, 200=False(revoke_lag_s 동안 2초 간격 재확인), 그 밖·오류=None."""
     end = time.time() + self.revoke_lag_s
     while True:
@@ -55,6 +55,8 @@ async def _probe(self, http, cred):
             return True
         if r.status_code != 200:
             return None
+        if on_call:  # 200 = 공급자가 집계한 내부 호출 -> 탐지에서 설명된 호출로(계약 P절)
+            on_call()
         if time.time() >= end:
             return False
         await asyncio.sleep(min(2.0, max(0.2, end - time.time())))
@@ -62,6 +64,7 @@ async def _probe(self, http, cred):
 
 class Mock:
     name, model, revoke_lag_s = "mock", "mock", 0.5
+    min_poll_s = 0  # 사용량 조회 최소 간격(속도 제한 공급자만 > 0)
     lag_s = USAGE_LAG_S["mock"]
     chat_url = f"{MOCK_BASE_URL}/v1/chat/completions"
 
@@ -84,6 +87,7 @@ class Mock:
 class OpenRouter:
     """키별 누적 사용액(USD)만 준다(호출 수 없음, /activity는 당일 미지원) -> 탐지기가 호출 수 추정."""
     name, model, revoke_lag_s = "openrouter", OPENROUTER_MODEL, OPENROUTER_REVOKE_LAG_S
+    min_poll_s = 3
     lag_s = USAGE_LAG_S["openrouter"]
     chat_url = f"{OPENROUTER_BASE_URL}/chat/completions"
 
@@ -133,6 +137,7 @@ class OpenAI:
     """Usage API가 키별 '분 버킷' 호출 수를 준다(반영 실측 약 381초). 키 = 프로젝트 서비스 계정.
     provider_ref = 'key_id|service_account_id|project_id'."""
     name, model, revoke_lag_s = "openai", OPENAI_MODEL, OPENAI_REVOKE_LAG_S
+    min_poll_s = 15
     lag_s = USAGE_LAG_S["openai"]
     chat_url = f"{OPENAI_BASE_URL}/chat/completions"
     poll_s = 15  # Usage API 호출 간격(워커 2초마다 부르면 과함). 사이에는 직전 값을 돌려준다

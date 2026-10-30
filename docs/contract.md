@@ -241,3 +241,11 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
 - 대시보드: 기존 필드 유지 + `detection` = {`mode`, `unit`(`%`|`건`), `suspect`, `warn`, `block`, `value`, `diff_calls`, `provider_calls`, `tolerance_calls`, `legacy`(+레거시면 `limit`)}. 활성 키 중 판정값이 가장 큰 키 기준(모두 0이면 주 키). `credentials[].value` = 키별 판정값.
 - 사고: `block_label`(예 `공급자 보고의 20%`, `10건`, 레거시 `70건`) 추가. 새 방식 사고는 `limit_calls`가 null(한도 대신 차단선), 레거시는 기존처럼 한도.
 - 키 발급 `POST /admin/{openrouter|openai|vllm}/provision` {role, name?, limit_usd?}: 이름은 `november-<name>`(프론트가 `이름-번호`를 보냄). mock은 발급 없음(404). 이름은 공급자 쪽에만 붙고 DB에는 저장하지 않는다.
+
+## P. 허용 오차 설정·1초 폴링 (2026-10-31)
+- `GET`/`PUT /admin/settings`에 `tolerance_calls`(정수 0~100, 기본 0). GET은 항상 돌려준다. 음수·101 이상·비정수는 400. 저장 위치 `setting.tolerance_calls`(`/demo/reset` 후 기본값으로 복귀).
+- 설명되지 않는 호출 = `공급자 − (게이트웨이 + 내부 호출) − tolerance_calls`(음수는 0). 레거시·사용량%·건수 방식, `certain_diff_calls`, 대시보드 `detection.tolerance_calls` 모두 이 설정값을 쓴다.
+- 내부 호출: 게이트웨이를 거치지 않는 우리 쪽 호출(승격 키 검증 max_tokens=1, 폐기 확인 probe가 200을 받은 호출). 크레덴셜별 메모리 카운터에 더해 설명된 호출로 친다. 게이트웨이가 공급자로 보냈지만 아직 usage_log에 쓰지 않은 진행 중 요청도 더한다. 공격 시뮬레이터 호출은 더하지 않는다(유출 호출이 맞다). 리셋 시 초기화.
+- 집계 시각: 어댑터 `lag_s == 0`(vLLM)이면 조회가 끝난 뒤 현재 시각까지의 게이트웨이 기록과 비교한다. Mock은 lag 2초 유지.
+- 환경변수: `TOLERANCE_CALLS`(설정이 없을 때 기본, 기본 0), `POLL_INTERVAL_S`(워커 주기, 기본 1), `USAGE_LAG_S_VLLM`(기본 0, 이전 2).
+- 어댑터 `min_poll_s`: 그 공급자의 사용량 조회 최소 간격(Mock 0, vLLM 0, OpenRouter 3, OpenAI 15). 워커는 크레덴셜별 마지막 조회 시각을 기억해 건너뛴다.

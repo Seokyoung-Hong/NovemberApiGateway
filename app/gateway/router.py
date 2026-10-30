@@ -4,7 +4,7 @@ import json
 import secrets
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from app import providers, vault
 from app.clientip import admin_ok, client_ip
-from app.contract import (DEFAULT_LIMIT_CALLS, DEFAULT_LIMIT_KRW, DETECTION_DEFAULTS, DETECTION_MODES, LIVE_KEY_PATH, PROVIDERS, USD_TO_KRW, hash_token,
+from app.contract import (DEFAULT_LIMIT_CALLS, DEFAULT_TOLERANCE_CALLS, DEFAULT_LIMIT_KRW, DETECTION_DEFAULTS, DETECTION_MODES, LIVE_KEY_PATH, PROVIDERS, USD_TO_KRW, hash_token,
                           mask_key)
 from app.db import get_conn
 
@@ -60,6 +60,7 @@ def _ip_allowed(ip: str, cidrs) -> bool:
 
 _wif_cache: dict[str, tuple[str, float]] = {}  # audience -> (token, 만료 epoch)
 blocked_ips: dict[str, float] = {}  # 더 이상 채우지 않음(허니키는 IP 차단 대신 전체 토큰 폐기). 대시보드 호환용 빈 dict
+inflight = {}  # credential_id -> 공급자로 보낸 뒤 아직 usage_log에 안 쓴 요청 수
 reset_gen = [0]  # /demo/reset마다 증가. 리셋 전에 시작한 중계는 usage_log를 쓰지 않는다(id 재사용 충돌 방지)
 HONEY_DEDUP_S = 60
 
@@ -152,6 +153,22 @@ async def chat_completions(request: Request, authorization: str = Header("")):
     body = await request.json()
     ad = providers.get(cred["provider"])
     body, url = ad.prepare(body), ad.chat_url
+    cid, handed = cred["id"], False
+    inflight[cid] = inflight.get(cid, 0) + 1  # 탐지: 공급자는 셌지만 아직 usage_log에 없는 요청(계약 P절)
+    try:
+        r = await _forward(svc, cred, ad, body, url, gen)
+        handed = isinstance(r, StreamingResponse)
+        return r
+    finally:
+        if not handed:
+            _done(cid)
+
+
+def _done(cid):
+    inflight[cid] = max(0, inflight.get(cid, 0) - 1)
+
+
+async def _forward(svc, cred, ad, body, url, gen):
     client = httpx.AsyncClient(timeout=60)
     try:
         key = await _upstream_key(client, cred)
@@ -189,6 +206,7 @@ async def chat_completions(request: Request, authorization: str = Header("")):
             await client.aclose()
             if usage and resp.status_code == 200 and gen == reset_gen[0]:
                 _log_usage(svc["id"], cred, body.get("model"), usage, resp.status_code)
+            _done(cred["id"])
 
     return StreamingResponse(relay(), status_code=resp.status_code, media_type="text/event-stream")
 
@@ -299,6 +317,7 @@ def get_settings():
     with get_conn() as c:
         rows = dict(c.execute("SELECT key,value FROM setting").fetchall())
     out = {k: int(rows.get(k, d)) for k, d in SETTING_DEFAULTS.items()}
+    out["tolerance_calls"] = int(rows.get("tolerance_calls", DEFAULT_TOLERANCE_CALLS))
     if rows.get("detection_mode") in DETECTION_MODES:
         num = lambda k: int(float(rows.get(k, DETECTION_DEFAULTS[k]))) if k.endswith("_calls") else float(rows.get(k, DETECTION_DEFAULTS[k]))
         out |= {"detection_mode": rows["detection_mode"]} | {k: num(k) for k in DETECTION_DEFAULTS}
@@ -315,11 +334,15 @@ class SettingsIn(BaseModel):
     suspect_calls: Optional[int] = None
     warn_calls: Optional[int] = None
     block_calls: Optional[int] = None
+    tolerance_calls: Any = None  # 허용 오차(건) 0~100 정수, 기본 0. 비정수는 422가 아니라 400(put_settings에서 검사)
 
 
 @admin.put("/settings")
 def put_settings(b: SettingsIn):
     sent = b.model_dump(exclude_none=True)
+    tol = sent.pop("tolerance_calls", None)
+    if tol is not None and (type(tol) is not int or not 0 <= tol <= 100):
+        raise HTTPException(400, "tolerance_calls must be 0..100")
     mode = sent.pop("detection_mode", None)
     if mode is not None and mode not in DETECTION_MODES:
         raise HTTPException(400, "detection_mode must be usage_pct or calls")
@@ -336,6 +359,8 @@ def put_settings(b: SettingsIn):
                 raise HTTPException(400, f"의심 < 경고 < 차단 순서여야 해요 ({', '.join(keys)})")
         if mode:
             sent["detection_mode"] = mode
+        if tol is not None:
+            sent["tolerance_calls"] = tol
         c.executemany("INSERT OR REPLACE INTO setting(key,value) VALUES(?,?)", [(k, str(v)) for k, v in sent.items()])
     return get_settings()
 

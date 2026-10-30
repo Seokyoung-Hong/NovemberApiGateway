@@ -36,7 +36,7 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 |---|---|---|---|
 | 장면 1 크레덴셜 카드 | `GET /admin/credentials` (또는 대시보드 `credentials[]`) | `masked, auth_mode, role, status, provider, replaced_by_id` | 원문은 절대 오지 않음. 마스킹만 표시 |
 | 장면 1 크레덴셜 추가 | `POST /admin/credentials {provider:"mock",auth_mode,role,secret?|audience?}` | 생성된 항목 | 400(PRIMARY 중복, 필수값 누락, provider가 mock 아님) |
-| 장면 1 한도 | `GET`/`PUT /admin/settings {unauthorized_call_limit}` | `unauthorized_call_limit`(판정), `loss_limit_krw`(참고) | 0 이하 400. 반영은 다음 틱(≤2초) |
+| 장면 1 한도 | `GET`/`PUT /admin/settings {unauthorized_call_limit}` | `unauthorized_call_limit`(판정), `loss_limit_krw`(참고) | 0 이하 400. 반영은 다음 틱(≤1초). 허용 오차 `tolerance_calls`(정수 0~100, 기본 0, 범위 밖·비정수 400)도 같은 API로 읽고 저장(화면은 별도) |
 | 장면 1 허용 IP | `GET`/`POST /admin/cidrs {cidr,label}`, `DELETE /admin/cidrs/{id}` | `id, cidr, label(INTERNAL/VPN)` | 잘못된 cidr 400, 빈 목록 = 모두 허용, `*` = 전체 허용 |
 | 장면 1 사용자 토큰 | `GET /admin/services`, `POST /admin/tokens {service_name}`, `DELETE /admin/tokens/{id}`, `POST /admin/services/{id}/suspend|resume` | `services[].tokens[].token_masked/status`, 발급 응답 `token`(원문 1회) | 원문은 발급 응답에서만 보여 주고 저장하지 않음 |
 | 장면 2 상태 배지·게이지 | `GET /admin/dashboard` (1초) | `status, diff_calls, limit_calls, warn_at_calls, block_at_calls, gateway_calls, provider_calls, active_credential, updated_at` | 4절 |

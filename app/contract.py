@@ -31,10 +31,10 @@ DEMO_MODE = os.getenv("DEMO_MODE", "1") == "1"
 COST_PER_TOKEN_KRW = 0.4  # 게이트웨이·Mock 동일 공식
 DEFAULT_LIMIT_KRW = 100_000  # 참고 표시용(금액은 더 이상 판정 기준 아님)
 DEFAULT_LIMIT_CALLS = 100  # 판정 기준: 허용하는 '설명되지 않는 호출 수'(사장이 설정)
-TOLERANCE_CALLS = 3  # 진행 중 요청·집계 지연 흡수
+DEFAULT_TOLERANCE_CALLS = int(os.getenv("TOLERANCE_CALLS", "0"))  # 허용 오차 기본값. 실제 값은 setting.tolerance_calls(관리자 설정)
 SUSPECT_RATIO, WARN_RATIO, BLOCK_RATIO = 0.1, 0.5, 0.7
 TOLERANCE_KRW = 5_000
-POLL_INTERVAL_S = 2  # 탐지 워커가 공급자 사용량을 읽는 주기
+POLL_INTERVAL_S = float(os.getenv("POLL_INTERVAL_S", "1"))  # 탐지 워커 주기. 공급자별 하한은 어댑터 min_poll_s
 MOCK_USAGE_LAG_S = 2  # Mock 집계 지연
 LEAKED_KEY = os.getenv("LEAKED_KEY", "sk-mock-K1-leaked-demo")  # 시드 K1의 키 값(청중에게 '유출'로 공개되는 값)
 ATTACK_RPS = 5
@@ -59,7 +59,7 @@ OPENAI_REVOKE_LAG_S = 3
 OPENAI_MODEL = "gpt-4o-mini"
 OPENAI_PROJECT_ID = os.getenv("OPENAI_PROJECT_ID", "proj_xkSCJaCHHKA3GEm5bEm02pHJ")
 USAGE_LAG_S = {"mock": MOCK_USAGE_LAG_S, "openrouter": OPENROUTER_USAGE_LAG_S, "openai": OPENAI_USAGE_LAG_S,
-               "vllm": float(os.getenv("USAGE_LAG_S_VLLM", "2"))}
+               "vllm": float(os.getenv("USAGE_LAG_S_VLLM", "0"))}
 RATIOS = {"mock": (SUSPECT_RATIO, WARN_RATIO, BLOCK_RATIO), "vllm": (SUSPECT_RATIO, WARN_RATIO, BLOCK_RATIO),  # 실제 공급자는 지연이 커서 낮춤
           "openrouter": (0.05, 0.2, 0.35), "openai": (0.05, 0.2, 0.35)}
 LIVE_KEY_PATH = os.path.join(os.path.dirname(DB_PATH) or ".", "live_key.json")  # 프로비저닝한 유출 키(OpenRouter 모드)
@@ -82,9 +82,9 @@ def effective_diff(provider_krw: float, gateway_krw: float) -> float:
     return max(0.0, provider_krw - gateway_krw - TOLERANCE_KRW)
 
 
-def effective_calls_diff(provider_calls: int, gateway_calls: int) -> int:
-    """공급자가 보고했지만 게이트웨이가 모르는 호출 수(오차 차감 후). 판정 기준."""
-    return max(0, provider_calls - gateway_calls - TOLERANCE_CALLS)
+def effective_calls_diff(provider_calls: int, gateway_calls: int, tol: int = DEFAULT_TOLERANCE_CALLS) -> int:
+    """공급자가 보고했지만 게이트웨이(+내부 호출)가 모르는 호출 수(허용 오차 tol 차감 후). 판정 기준."""
+    return max(0, provider_calls - gateway_calls - tol)
 
 
 def judge(diff: float, limit: float, ratios=RATIOS["mock"]) -> str:
@@ -132,7 +132,7 @@ if __name__ == "__main__":  # 최소 자체 검증
     assert effective_diff(4000, 0) == 0 and effective_diff(30_000, 5_000) == 20_000
     assert [judge(d, 100) for d in (0, 10, 50, 70)] == ["NORMAL", "SUSPECT", "WARNING", "BREACH"]
     assert [judge(d, 100, RATIOS["openrouter"]) for d in (4, 5, 20, 35)] == ["NORMAL", "SUSPECT", "WARNING", "BREACH"]
-    assert effective_calls_diff(20, 10) == 7 and effective_calls_diff(5, 10) == 0
+    assert effective_calls_diff(20, 10, 3) == 7 and effective_calls_diff(11, 10, 0) == 1 and effective_calls_diff(5, 10) == 0
     print("contract ok")
 
 

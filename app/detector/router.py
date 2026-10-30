@@ -13,18 +13,31 @@ from app import providers, vault
 from app.clientip import admin_ok
 from app.contract import (ADMIN_KEY, ATTACK_MAX_TOKENS, ATTACK_MAX_TOKENS_VLLM, ATTACK_RPS, CALL_COST_MAX_USD, CALL_COST_MIN_USD,
                           CALL_COST_RECENT_N, DEFAULT_CALL_COST_USD, DEFAULT_LIMIT_CALLS, HYSTERESIS_S, LEAKED_KEY,
-                          LIVE_KEY_PATH, OPENROUTER_LIMIT_CALLS, POLL_INTERVAL_S, PROVIDERS, RATIOS, TOLERANCE_CALLS,
+                          LIVE_KEY_PATH, OPENROUTER_LIMIT_CALLS, POLL_INTERVAL_S, PROVIDERS, RATIOS, DEFAULT_TOLERANCE_CALLS,
                           USD_TO_KRW, DETECTION_DEFAULTS, DETECTION_MODES, effective_calls_diff, effective_diff,
                           hash_token, judge, judge_th, mask_key, measure)
 from app.db import get_conn
-from app.gateway.router import _wif_cache, blocked_ips, insert_provider_cred, reset_gen
+from app.gateway.router import _wif_cache, blocked_ips, inflight, insert_provider_cred, reset_gen
 
 MOCK = PROVIDERS["mock"]
 router = APIRouter()
 lock = asyncio.Lock()  # ponytail: 워커 1틱·리셋을 직렬화하는 전역 락. 다중 워커 배포면 DB 락으로.
-state = {"attack": None, "judged": {}, "view": {}, "updated_at": None, "tasks": set(), "honeykeys": {}, "revoke": {}}
+state = {"extra": {}, "attack": None, "judged": {}, "view": {}, "updated_at": None, "tasks": set(), "honeykeys": {}, "revoke": {}}
 # judged: credential_id -> (판정, 하강 대기 시작 시각), view: credential_id -> 최근 assess 결과, tasks: 대응 백그라운드 작업(리셋 시 취소), honeykeys: planted_at -> 원문(데모용)
 # revoke: credential_id -> 공급자 폐기 추적 {st: PENDING|FAILED|CONFIRMED, cred, iid, tl, sb, sb_ok, failed, at, base, checked} (계약 N절)
+
+
+# extra: credential_id -> 게이트웨이를 거치지 않은 내부 호출 수(승격 검증, 폐기 확인 probe). 설명된 호출로 친다
+
+
+def tolerance(c) -> int:
+    """허용 오차(건): setting.tolerance_calls, 없으면 DEFAULT_TOLERANCE_CALLS(기본 0)."""
+    r = c.execute("SELECT value FROM setting WHERE key='tolerance_calls'").fetchone()
+    return int(r[0]) if r else DEFAULT_TOLERANCE_CALLS
+
+
+def explain(cid, n=1):
+    state["extra"][cid] = state["extra"].get(cid, 0) + n
 
 
 def spawn(coro):
@@ -105,16 +118,18 @@ def assess(c, cred, u, now):
     - 정렬 비교(diff_calls, 표시용): buckets가 있으면 반영 완료 버킷(끝 <= now-lag_s) 누적 vs 같은 경계까지의 게이트웨이,
       requests면 스냅샷 vs (스냅샷-lag_s)까지의 게이트웨이, cost/tokens뿐이면 차액 / 1건 기대값으로 호출 수 추정.
     - 확실 유출(certain_diff_calls): 공급자 누적 > 게이트웨이 '현재까지 전체' 누적. 지연이 있어도 오탐이 없다.
-    둘 다 TOLERANCE_CALLS(진행 중 요청, 승격 검증 호출 1건 등) 차감."""
-    ad, cid = providers.get(cred["provider"]), cred["id"]
-    total, est = _gw(c, cid), False
+    게이트웨이 쪽에는 내부 호출(state extra)과 진행 중 요청(inflight)을 더하고, 둘 다 허용 오차 tolerance(c) 차감.
+    lag_s == 0(실시간 공급자)이면 조회가 끝난 뒤 현재 시각까지의 게이트웨이 기록과 비교한다(now가 조회 후 시각)."""
+    ad, cid, tol = providers.get(cred["provider"]), cred["id"], tolerance(c)
+    known = state["extra"].get(cid, 0) + inflight.get(cid, 0)
+    total, est = _gw(c, cid) + known, False
     if u.get("buckets") is not None:
         done = [b for b in u["buckets"] if b[1] <= now - ad.lag_s]
         edge = max((b[1] for b in done), default=None)
         pc, gc = sum(b[2] for b in done), (_gw(c, cid, before=edge) if edge else 0)
         certain = u["requests"] - total
     elif u.get("requests") is not None:
-        gc, pc = _gw(c, cid, until=now - ad.lag_s), u["requests"]
+        gc, pc = _gw(c, cid, until=now - ad.lag_s) + known, u["requests"]
         certain = pc - total
     else:
         cost = u.get("cost_usd") is not None
@@ -123,9 +138,9 @@ def assess(c, cred, u, now):
         per = per_call(c, cid, "cost" if cost else "tokens")
         gc = _gw(c, cid, until=now - ad.lag_s)
         pc = gc + max(0, round((val - _gw(c, cid, col, until=now - ad.lag_s)) / per))
-        certain, est = round((val - _gw(c, cid, col)) / per), True
-    return {"gateway_calls": gc, "provider_calls": pc, "diff_calls": effective_calls_diff(pc, gc),
-            "certain_diff_calls": max(0, certain - TOLERANCE_CALLS), "certain_raw": max(0, certain),
+        certain, est = round((val - _gw(c, cid, col)) / per) - known, True
+    return {"gateway_calls": gc, "provider_calls": pc, "diff_calls": effective_calls_diff(pc, gc, tol),
+            "certain_diff_calls": max(0, certain - tol), "certain_raw": max(0, certain),
             "calls_estimated": est, "provider_total_calls": u.get("requests", pc)}
 
 
@@ -178,12 +193,19 @@ async def worker_loop():
             await asyncio.sleep(POLL_INTERVAL_S)
 
 
+last_poll = {}  # credential_id -> 마지막 사용량 조회 시각
+
+
 async def tick(http):
     with get_conn() as c:
         creds = c.execute("SELECT * FROM credential WHERE status='ACTIVE' ORDER BY id").fetchall()
     for cred in creds:
+        ad = providers.get(cred["provider"])
+        if time.time() - last_poll.get(cred["id"], 0) < ad.min_poll_s:  # 속도 제한 공급자는 덜 자주
+            continue
+        last_poll[cred["id"]] = time.time()
         try:
-            u = await providers.get(cred["provider"]).fetch_usage(http, cred)
+            u = await ad.fetch_usage(http, cred)
         except httpx.HTTPError as e:  # 한 공급자 조회 실패가 다른 크레덴셜 판정을 막지 않게
             print("usage fetch error:", cred["id"], repr(e)[:120])
             continue
@@ -343,7 +365,7 @@ async def revoke_guard(cid, req_ok=None):
                 if n == 0:
                     step("REVOKE_PROVIDER_KEY", req_ok, f"{cred['masked']} 공급자 재폐기 요청 {'성공' if req_ok else '실패(3회)'}")
             n += 1
-            v = await ad.probe_revoked(http, cred)
+            v = await ad.probe_revoked(http, cred, on_call=lambda: explain(cid))
             if gen != reset_gen[0]:
                 return
             if v:
@@ -394,6 +416,7 @@ async def recover(cred, iid, tl, diff, rule, sb):
         async with httpx.AsyncClient(timeout=15) as http:
             key = await bearer(http, sb)
             ad = providers.get(sb["provider"])  # 실제 공급자는 실제 호출 1건(max_tokens=1)
+            explain(sb["id"])  # 게이트웨이 밖 내부 호출 -> 설명된 호출
             v = await http.post(ad.chat_url, headers={"Authorization": f"Bearer {key}"},
                                 json={"model": ad.model,
                                       "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1})
@@ -457,7 +480,7 @@ def dashboard():
         act = c.execute("SELECT id,provider,auth_mode,masked FROM credential "
                         "WHERE role='PRIMARY' AND status='ACTIVE' ORDER BY id LIMIT 1").fetchone()
         cidrs = [r["cidr"] for r in c.execute("SELECT cidr FROM allowed_cidr")]
-        det = detection(c, act["provider"] if act else "mock")
+        det, tol = detection(c, act["provider"] if act else "mock"), tolerance(c)
     # 활성 키 중 판정값이 가장 큰 것(모두 0이면 주 키). 화면은 detection 하나로 막대·차단선·단위를 그린다
     live = [r for r in rows if r["status"] == "ACTIVE"]
     top = max(live, key=lambda r: r["value"], default=None)
@@ -465,7 +488,7 @@ def dashboard():
         top = next((r for r in rows if r["id"] == act["id"]), top)
     det |= {"value": top["value"] if top else 0,
             "diff_calls": max(top["diff_calls"], top["certain_diff_calls"]) if top else 0,
-            "provider_calls": top["provider_calls"] if top else 0, "tolerance_calls": TOLERANCE_CALLS}
+            "provider_calls": top["provider_calls"] if top else 0, "tolerance_calls": tol}
     _, warn_r, block_r = ratios(act["provider"] if act else "mock")
     return {"status": status, "detection": det, "limit_krw": lim, "warn_at_krw": lim * warn_r, "block_at_krw": lim * block_r,
             "diff_krw": dt, "diff_usd": max(0.0, pt - gt) / USD_TO_KRW, "gateway_cost_krw": gt, "provider_cost_krw": pt,
@@ -654,6 +677,9 @@ async def _reset(provider: str):
             except FileNotFoundError:
                 pass
         state["judged"].clear()
+        state["extra"].clear()
+        last_poll.clear()
+        inflight.clear()
         state["view"].clear()
         state["revoke"].clear()
         now = datetime.now(timezone.utc).isoformat()
