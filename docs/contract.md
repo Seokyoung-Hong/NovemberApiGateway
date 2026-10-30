@@ -214,7 +214,7 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
 > 해커톤 데모 전용 구성이다. 실제 시스템 아키텍처 그림에는 포함하지 않는다.
 공급자가 구현할 인터페이스는 `docs/vllm-gateway-spec.md`(정답). vLLM 앞단 게이트웨이가 키 인증(처음 보는 키도 유효, 폐기 키만 401)·키별 계량·폐기를 맡는다. 어댑터 `Vllm`(`app/providers.py`)은 Mock과 같은 모양.
 
-- 환경변수: `VLLM_BASE_URL`(기본 `http://127.0.0.1:8100`), `VLLM_ADMIN_KEY`(설정 시 관리 경로에 `X-Admin-Key`로 보냄, 공급자의 `GPU_ADMIN_KEY`와 같은 값), `VLLM_MODEL`(기본 `google/gemma-4-E4B-it-qat-w4a16-ct`), `USAGE_LAG_S_VLLM`(기본 2).
+- 환경변수: `VLLM_BASE_URL`(코드 기본 `http://127.0.0.1:8100`은 로컬 개발용, 배포 서버는 `https://vllm.dorm.sio2.kr`), `VLLM_ADMIN_KEY`(설정 시 관리 경로에 `X-Admin-Key`로 보냄, 공급자의 `GPU_ADMIN_KEY`와 같은 값), `VLLM_MODEL`(기본 `google/gemma-4-E4B-it-qat-w4a16-ct`), `USAGE_LAG_S_VLLM`(기본 2).
 - 공급자 쪽 호출: 중계·공격 `POST {VLLM_BASE_URL}/v1/chat/completions`, 사용량 `GET /usage?owner=<키>` → `{requests, tokens, cost_krw}`(탐지기는 `requests`로 판정, 비율 Mock과 동일 0.1/0.5/0.7), 폐기 `POST /revoke {"owner"}`, 초기화 `POST /demo/reset`(실패·404 무시).
 - 중계 `prepare`: model이 비었거나 `mock`/`demo`로 시작하면 `VLLM_MODEL`로 치환, `stream:true`면 `stream_options.include_usage=true`. 중계 1건 비용은 Mock과 같은 토큰×0.4원.
 - 크레덴셜: `POST /admin/credentials {provider:"vllm", auth_mode:"API_KEY", role, secret}`(secret 필수, `provider_ref`=secret. WIF는 400). 또는 `POST /demo/reset-vllm`: `/demo/reset`과 같이 DB 초기화 후 K1(PRIMARY) `sk-vllm-K1-<랜덤8>`·S1(STANDBY) `sk-vllm-S1-<랜덤8>` 시드, 허용 CIDR 없음(모두 허용), userA·userB 토큰, 허니키, 한도 100, 응답에 `leaked_key`. PRIMARY 키는 `data/live_key.json`에 저장되어 `/live/config`가 이 키를 공개한다. `/demo/cleanup-vllm`은 없음(404, 폐기할 외부 키 없음).

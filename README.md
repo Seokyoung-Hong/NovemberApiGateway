@@ -14,7 +14,7 @@ python -m venv .venv
 - 구 스키마의 data/gateway.db는 서버 시작 시 자동 재생성됨(데모 데이터 삭제).
 - OpenRouter 라이브 모드(실제 키로 유출·차단 시연): `POST /demo/reset-openrouter` (`.env`에 `OPENROUTER_MANAGEMENT_KEY`), 정리 `POST /demo/cleanup-openrouter`. 절차는 `scripts/live.md`, 명세는 `docs/contract.md` G절.
 - 공급자 어댑터(mock·openrouter·openai, `app/providers.py`): `POST /demo/reset-openai`·`/demo/cleanup-openai`(`.env`에 `OPENAI_ADMIN_KEY`, 탐지 약 7분 지연). 명세 I절.
-- vLLM 공급자(자체 GPU, **해커톤 데모 전용 — 실제 아키텍처 그림 제외**): `POST /demo/reset-vllm`, 환경변수 `VLLM_BASE_URL`(기본 `http://127.0.0.1:8100`)·`VLLM_ADMIN_KEY`·`VLLM_MODEL`·`USAGE_LAG_S_VLLM`(기본 2). 명세 M절, 공급자 인터페이스 `docs/vllm-gateway-spec.md`.
+- vLLM 공급자(자체 GPU, **해커톤 데모 전용 — 실제 아키텍처 그림 제외**): `POST /demo/reset-vllm`, 환경변수 `VLLM_BASE_URL`(코드 기본 `http://127.0.0.1:8100`은 로컬 개발용, 배포는 `https://vllm.dorm.sio2.kr`)·`VLLM_ADMIN_KEY`·`VLLM_MODEL`·`USAGE_LAG_S_VLLM`(기본 2). 명세 M절, 공급자 인터페이스 `docs/vllm-gateway-spec.md`.
 - 관리자 API는 `X-Admin-Key` 헤더(로컬 기본값 `admin`, 환경변수 `ADMIN_KEY`). 명세는 `docs/contract.md`.
 - 기능 테스트 페이지: `http://127.0.0.1:8000/test`, 청중 페이지: `http://127.0.0.1:9000/live`.
 

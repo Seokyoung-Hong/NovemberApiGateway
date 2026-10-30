@@ -4,6 +4,9 @@
 
 vLLM은 키별 사용량을 알려 주지 않는다. 그래서 vLLM 앞단 게이트웨이(`gpu_lb`)가 **공급자 역할**(키 인증, 키별 계량, 키 폐기)을 하도록 아래 인터페이스를 구현한다. 이 규약을 그대로 따르면 NovemberAiGateway의 탐지기가 `vllm` 공급자로 바로 사용한다(기존 Mock Provider와 같은 모양, `docs/contract.md` A절 참조).
 
+## 0. 서비스 주소
+- vLLM 게이트웨이는 숙소 쪽 NPM이 TLS를 종료하는 **`https://vllm.dorm.sio2.kr`**로 서비스한다(`*.dorm.sio2.kr` 인증서는 숙소 NPM 담당). NovemberAiGateway(Proxmox CT)는 이 주소를 `VLLM_BASE_URL`로 호출한다. 관리 경로(`/usage`, `/revoke`, `/demo/reset`)는 공개 인터넷을 지나므로 **`GPU_ADMIN_KEY`를 반드시 설정**하고 우리 쪽 `VLLM_ADMIN_KEY`를 같은 값으로 맞춘다.
+
 ## 1. 인증
 - 요청 헤더 `Authorization: Bearer <키>`.
 - **키는 처음 보는 값이어도 유효**(자동 등록)이고, **폐기된 키만 401** `{"error":"revoked"}`. (기존 단일 `GPU_API_KEY`는 "서비스 계정 키"로 계속 허용해도 되지만 아래 계량·폐기 대상이 아님.)
@@ -27,7 +30,7 @@ vLLM은 키별 사용량을 알려 주지 않는다. 그래서 vLLM 앞단 게�
 - 계량값은 메모리 보관으로 충분(프로세스 재시작 시 초기화 허용).
 
 ## 4. NovemberAiGateway 쪽 설정 (우리 구현)
-- 환경변수: `VLLM_BASE_URL`(기본 `http://127.0.0.1:8100`, 이 게이트웨이 주소), `VLLM_ADMIN_KEY`(위 `GPU_ADMIN_KEY`와 같은 값), `VLLM_MODEL`(기본 `google/gemma-4-E4B-it-qat-w4a16-ct`), `USAGE_LAG_S_VLLM`(기본 2).
+- 환경변수: `VLLM_BASE_URL`(코드 기본 `http://127.0.0.1:8100`은 로컬 개발용, 배포 서버는 `https://vllm.dorm.sio2.kr`), `VLLM_ADMIN_KEY`(위 `GPU_ADMIN_KEY`와 같은 값), `VLLM_MODEL`(기본 `google/gemma-4-E4B-it-qat-w4a16-ct`), `USAGE_LAG_S_VLLM`(기본 2).
 - 공급자 이름 `vllm`. 크레덴셜 등록: `POST /admin/credentials {provider:"vllm", auth_mode:"API_KEY", role, secret}` 또는 `POST /demo/reset-vllm`(K1·S1 시드, 유출 키 반환).
 - 탐지기: `GET {VLLM_BASE_URL}/usage?owner=<키>`를 2초마다 조회 → 호출 수(`requests`) 기준으로 판정(Mock과 동일 비율 0.1/0.5/0.7). 폐기: `POST {VLLM_BASE_URL}/revoke`.
 - 공격 시뮬레이터: PRIMARY 크레덴셜이 `vllm`이면 `VLLM_BASE_URL`로 `VLLM_MODEL`, 작은 `max_tokens`(기본 30)로 호출한다(GPU 부하를 줄이기 위해 초당 5건).
