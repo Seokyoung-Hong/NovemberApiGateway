@@ -188,7 +188,7 @@ sequenceDiagram
 ## 6. 배포 구조
 - **로컬 개발**: Mock 9000 + 게이트웨이 8000, SQLite 파일, `scripts/dev.ps1`.
 - **목표 구성(아키텍처 결정)**: **Nginx Proxy Manager(NPM)가 게이트웨이의 단일 진입점**이다. NPM이 TLS(`*.sio2.kr` 와일드카드)를 종료하고 `hack.sio2.kr`를 **Proxmox 위의 게이트웨이 서버(LXC CT)**로 프록시하며, `/live`만 같은 CT의 Mock(9000 계열 포트)으로 라우팅한다. CT 안에서는 게이트웨이(8000)·Mock·SQLite를 systemd로 구동하고, CT 방화벽은 NPM의 접근만 허용한다. 배포는 `pve-deploy` 절차(CT 생성 → 앱 배포 → NPM 프록시 + 인증서)를 따른다.
-- **현재 데모 구동(임시)**: 위 목표 구성으로 옮기기 전까지는 이 PC에서 게이트웨이 8800·Mock 9800을 Tailscale IP로 바인드하고 NPM이 Tailscale 경로로 프록시한다(NPM 쪽 Tailscale 키 만료에 영향받는 임시 방식).
+- **현재 구동 상태(실제 적용됨)**: 위 목표 구성이 적용되어 있다. Proxmox CT 1003(`hack-gw`, 172.30.1.43)에서 게이트웨이(8000)·Mock(9000)을 systemd로 구동하고, NPM 프록시 호스트 95(`hack.sio2.kr`, 인증서 `*.sio2.kr`)가 `172.30.1.43:8000`으로, `/live`는 `:9000`으로 프록시한다. 환경파일 `/opt/november/.env.server`(공개 모드, `TRUSTED_PROXIES`=NPM 172.30.1.101, 실제 AI 키 없음). 재배포는 `scripts/deploy_test_server.sh 1003`. (이 PC + Tailscale 구동 방식은 중단되었다. `scripts/run_test_server.ps1`은 로컬 점검용으로만 남긴다.)
 - 환경변수: `PUBLIC_MODE`, `ADMIN_KEY`, `TRUSTED_PROXIES`, `DEMO_MODE`(기본 1, 로컬 IdP·`X-Demo-Source-IP`), `MOCK_BASE_URL`, `DB_PATH`, `VAULT_KEY`, `LEAKED_KEY`, `IDP_ISSUER`, `UPSTREAM_API_KEY`·`UPSTREAM_BASE_URL`(Mock 실제 AI 패스스루), `LIVE_MODEL`, `OPENROUTER_MANAGEMENT_KEY`, `OPENAI_ADMIN_KEY`·`OPENAI_PROJECT_ID`. 테스트 서버는 실제 키 3종(`UPSTREAM_API_KEY`·`OPENROUTER_MANAGEMENT_KEY`·`OPENAI_ADMIN_KEY`)을 지운 채 실행한다(Mock만).
 
 ## 7. 그림 작성 가이드
