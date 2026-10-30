@@ -21,8 +21,9 @@ from app.gateway.router import _wif_cache, blocked_ips, insert_provider_cred, re
 MOCK = PROVIDERS["mock"]
 router = APIRouter()
 lock = asyncio.Lock()  # ponytail: 워커 1틱·리셋을 직렬화하는 전역 락. 다중 워커 배포면 DB 락으로.
-state = {"attack": None, "judged": {}, "view": {}, "updated_at": None, "tasks": set(), "honeykeys": {}}
+state = {"attack": None, "judged": {}, "view": {}, "updated_at": None, "tasks": set(), "honeykeys": {}, "revoke": {}}
 # judged: credential_id -> (판정, 하강 대기 시작 시각), view: credential_id -> 최근 assess 결과, tasks: 대응 백그라운드 작업(리셋 시 취소), honeykeys: planted_at -> 원문(데모용)
+# revoke: credential_id -> 공급자 폐기 추적 {st: PENDING|FAILED|CONFIRMED, cred, iid, tl, sb, sb_ok, failed, at, base, checked} (계약 N절)
 
 
 def spawn(coro):
@@ -182,7 +183,38 @@ async def tick(http):
                        "diff_krw": krw[0]})
         if v == "BREACH":
             await respond(http, cred, diff, lim, *krw)
+    await watch_revoked(http)
     state["updated_at"] = time.time()
+
+
+WATCH_S, WATCH_WINDOW_S = 10, 1800  # 폐기 확인된 키 재활성 감시: 10초에 1번, 확인 후 30분 동안
+
+
+async def watch_revoked(http):
+    """폐기 확인 후 공급자 누적 호출 수(없으면 비용)가 기준값보다 늘면 폐기가 효과 없음 -> 재폐기.
+    기준값 = 확인 시각 + lag_s 이후 첫 조회값(확인 전 호출이 공급자에 늦게 집계되는 것을 오탐하지 않게)."""
+    now = time.time()
+    for cid, r in list(state["revoke"].items()):
+        if r["st"] != "CONFIRMED" or now - r["at"] > WATCH_WINDOW_S or now - r["checked"] < WATCH_S:
+            continue
+        r["checked"] = now
+        try:
+            u = await providers.get(r["cred"]["provider"]).fetch_usage(http, r["cred"])
+        except httpx.HTTPError:
+            continue
+        val = u["requests"] if u.get("requests") is not None else (u.get("cost_usd") or 0)
+        if r["base"] is None:
+            r["base"] = val
+        elif val > r["base"]:
+            r["tl"].append({"at": iso(now), "step": "REVOKE_VERIFIED", "ok": False,
+                            "detail": f"폐기 후 공급자 누적 {r['base']:g} -> {val:g} 증가(폐기 효과 없음), 재폐기"})
+            r.update(st="PENDING", failed=True, base=None)
+            with get_conn() as c:
+                c.execute("UPDATE incident SET status='ROTATED', resolved_at=NULL, timeline=? WHERE id=?",
+                          (json.dumps(r["tl"]), r["iid"]))
+                event(c, "REVOKE_NOT_EFFECTIVE", f"{r['cred']['masked']} 폐기 후에도 공급자 호출 증가(누적 {val}). 재폐기 시작",
+                      {"credential_id": cid, "incident_id": r["iid"], "provider_value": val})
+            spawn(revoke_guard(cid))
 
 
 STEP_DELAY_S = 1.0  # 데모 연출: 폐기 이후 단계 사이 간격(차단 자체는 지연 없음)
@@ -195,8 +227,36 @@ def save_tl(iid, tl, **cols):
         c.execute(f"UPDATE incident SET timeline=?{sets} WHERE id=?", (json.dumps(tl), *cols.values(), iid))
 
 
+REVOKE_TRIES = (0, 0.5, 1)  # 폐기 요청 최대 3회(실패 시 0.5초, 1초 후 재시도)
+GUARD_START_S, GUARD_MAX_S = 3, 30  # revoke_guard 재요청 간격(3초에서 2배씩, 상한 30초)
+
+
+async def revoke_request(http, ad, cred) -> bool:
+    for d in REVOKE_TRIES:
+        await asyncio.sleep(d)
+        try:
+            if await ad.revoke(http, cred):
+                return True
+        except httpx.HTTPError:
+            pass
+    return False
+
+
+async def block_live(http, cred):
+    """청중 경로 하드 차단: 공급자 폐기 결과와 무관하게 키 원문을 Mock 폐기 목록에 올린다
+    (/live/chat이 공급자 전달 전에 검사). 최선 시도, 실패해도 대응은 계속."""
+    if cred["auth_mode"] != "API_KEY":
+        return
+    try:
+        await http.post(f"{MOCK}/revoke", json={"owner": vault.decrypt(cred["secret_enc"])},
+                        headers={"X-Admin-Key": ADMIN_KEY})
+    except Exception as e:
+        print("live block error:", repr(e)[:120])
+
+
 async def respond(http, cred, diff, lim, diff_krw, lim_krw):
-    """BREACH 자동 대응. 탐지·폐기는 즉시(워커 락 안), 나머지는 백그라운드로 연출 지연. 크레덴셜당 incident 1개.
+    """BREACH 자동 대응. 탐지·폐기 요청은 즉시(워커 락 안), 나머지는 백그라운드로 연출 지연. 크레덴셜당 incident 1개.
+    폐기 요청 결과와 무관하게 DB 폐기·예비 키 승격은 즉시(사용자 연속성). 공급자 폐기 확인은 revoke_guard가 맡는다.
     diff/lim = 호출 수(판정 기준), diff_krw/lim_krw = 참고 금액."""
     with get_conn() as c:
         if c.execute("SELECT 1 FROM incident WHERE credential_id=?", (cred["id"],)).fetchone():
@@ -208,13 +268,11 @@ async def respond(http, cred, diff, lim, diff_krw, lim_krw):
                         "timeline) VALUES(?,?,?,?,?,?,?,?)", (cred["id"], "OPEN", time.time(), diff_krw, lim_krw, diff,
                                                               lim, json.dumps(tl))).lastrowid
     ad = providers.get(cred["provider"])
-    try:
-        ok = await ad.revoke(http, cred)
-    except httpx.HTTPError:
-        ok = False
+    await block_live(http, cred)
+    ok = await revoke_request(http, ad, cred)
     lag = f", 공급자 반영까지 약 {ad.revoke_lag_s:g}초 소요" if ad.revoke_lag_s >= 1 else ""
-    tl.append({"at": iso(time.time()), "step": "REVOKE_PROVIDER_KEY", "detail": f"{cred['masked']} 공급자 폐기{lag}",
-               "ok": ok})
+    tl.append({"at": iso(time.time()), "step": "REVOKE_PROVIDER_KEY", "ok": ok,
+               "detail": f"{cred['masked']} 공급자 폐기 요청 {'성공' if ok else '실패(3회)'}{lag}"})
     with get_conn() as c:  # 폐기·승격은 즉시 DB 반영(사용자 호출 503 방지)
         c.execute("UPDATE credential SET status='REVOKED' WHERE id=?", (cred["id"],))
         sb = c.execute("SELECT * FROM credential WHERE provider=? AND role='STANDBY' AND status='ACTIVE' "
@@ -223,8 +281,62 @@ async def respond(http, cred, diff, lim, diff_krw, lim_krw):
             c.execute("UPDATE credential SET role='PRIMARY' WHERE id=?", (sb["id"],))
             c.execute("UPDATE credential SET replaced_by_id=? WHERE id=?", (sb["id"], cred["id"]))
     save_tl(iid, tl, blocked_at=time.time(), new_credential_id=sb["id"] if sb else None)
+    state["revoke"][cred["id"]] = {"st": "PENDING", "cred": cred, "iid": iid, "tl": tl, "sb": sb, "sb_ok": False,
+                                   "failed": False, "at": 0.0, "base": None, "checked": 0.0}
     spawn(final_loss(cred, iid))
     spawn(recover(cred, iid, tl, diff, lim, sb))
+    spawn(revoke_guard(cred["id"], ok))
+
+
+def maybe_resolve(cid):
+    """RESOLVED·RECOVERED = 예비 키 확인 성공 AND 공급자 폐기 확인."""
+    r = state["revoke"][cid]
+    if r["sb_ok"] and r["st"] == "CONFIRMED":
+        save_tl(r["iid"], r["tl"], status="RESOLVED", resolved_at=time.time())
+        with get_conn() as c:
+            event(c, "RECOVERED", f"{r['sb']['masked']}로 전환 완료, 서비스 정상", {"incident_id": r["iid"]})
+
+
+async def revoke_guard(cid, req_ok=None):
+    """공급자 폐기가 확인(probe_revoked True)될 때까지 재요청·재확인. req_ok=None이면 첫 회도 요청부터."""
+    gen, r = reset_gen[0], state["revoke"][cid]
+    cred, ad, n, delay = r["cred"], providers.get(r["cred"]["provider"]), 0, GUARD_START_S
+
+    def step(name, ok, detail):
+        r["tl"].append({"at": iso(time.time()), "step": name, "ok": ok, "detail": detail})
+        save_tl(r["iid"], r["tl"])
+
+    async with httpx.AsyncClient(timeout=15) as http:
+        while True:
+            if req_ok is None:
+                req_ok = await revoke_request(http, ad, cred)
+                if gen != reset_gen[0]:
+                    return
+                if n == 0:
+                    step("REVOKE_PROVIDER_KEY", req_ok, f"{cred['masked']} 공급자 재폐기 요청 {'성공' if req_ok else '실패(3회)'}")
+            n += 1
+            v = await ad.probe_revoked(http, cred)
+            if gen != reset_gen[0]:
+                return
+            if v:
+                r.update(st="CONFIRMED", at=time.time(), base=None, checked=time.time() - WATCH_S + ad.lag_s + 1)
+                step("REVOKE_VERIFIED", True, f"{cred['masked']} 유출 키 호출 401 확인(누적 {n}회 시도)")
+                if r["failed"]:
+                    with get_conn() as c:
+                        event(c, "REVOKE_CONFIRMED", f"{cred['masked']} 공급자 폐기 확인(누적 {n}회 시도)",
+                              {"credential_id": cid, "incident_id": r["iid"], "attempts": n})
+                maybe_resolve(cid)
+                return
+            why = "요청 실패" if not req_ok else ("키가 아직 유효(200)" if v is False else "확인 불가")
+            if n == 1:
+                step("REVOKE_VERIFIED", False, f"{cred['masked']} 폐기 미확인: {why}. 재시도 중")
+            r.update(st="FAILED", failed=True)
+            if n == 1 or n % 10 == 0:
+                with get_conn() as c:
+                    event(c, "REVOKE_FAILED", f"{cred['masked']} 공급자 폐기 미확인({why}, 누적 {n}회 시도)",
+                          {"credential_id": cid, "incident_id": r["iid"], "attempts": n})
+            await asyncio.sleep(delay)
+            delay, req_ok = min(GUARD_MAX_S, delay * 2), None
 
 
 async def recover(cred, iid, tl, diff, lim, sb):
@@ -261,12 +373,10 @@ async def recover(cred, iid, tl, diff, lim, sb):
     except Exception:
         ok = False
     step("VERIFIED", f"{sb['masked']} 호출 {'성공' if ok else '실패'}", ok)
+    save_tl(iid, tl)
     if ok:
-        save_tl(iid, tl, status="RESOLVED", resolved_at=time.time())
-        with get_conn() as c:
-            event(c, "RECOVERED", f"{sb['masked']}로 전환 완료, 서비스 정상", {"incident_id": iid})
-    else:
-        save_tl(iid, tl)
+        state["revoke"][cred["id"]]["sb_ok"] = True
+        maybe_resolve(cred["id"])
 
 
 async def final_loss(cred, iid):
@@ -303,7 +413,8 @@ def dashboard():
                         | {"gateway_cost_krw": g, "provider_cost_krw": p, "diff_krw": d,
                            "diff_usd": max(0.0, p - g) / USD_TO_KRW,
                            "gateway_calls": gc, "provider_calls": pc, "diff_calls": dc, "certain_diff_calls": cc,
-                           "calls_estimated": a.get("calls_estimated", cr["provider"] == "openrouter")})
+                           "calls_estimated": a.get("calls_estimated", cr["provider"] == "openrouter"),
+                           "revocation": state["revoke"].get(cr["id"], {}).get("st")})
         inc = c.execute("SELECT * FROM incident WHERE trigger_type!='HONEYKEY' ORDER BY id DESC LIMIT 1").fetchone()
         status = "WARNING" if worst == "BREACH" else worst  # BREACH는 워커가 곧 BLOCKED로 바꾼다
         if inc and inc["status"] != "RESOLVED":
@@ -505,6 +616,7 @@ async def _reset(provider: str):
                 pass
         state["judged"].clear()
         state["view"].clear()
+        state["revoke"].clear()
         now = datetime.now(timezone.utc).isoformat()
         tokens = {}
         with get_conn() as c:
