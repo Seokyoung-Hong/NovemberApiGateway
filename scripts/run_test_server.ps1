@@ -6,7 +6,7 @@ $Py = Join-Path $Repo ".venv\Scripts\python.exe"
 $Deploy = "C:\Users\tjrdu\novemberdeploy"
 $Src, $Data, $Logs = "$Deploy\src", "$Deploy\data", "$Deploy\logs"
 
-$ts = (tailscale ip -4 2>$null | Select-Object -First 1)
+$ts = if ($env:BIND_IP) { $env:BIND_IP } else { (tailscale ip -4 2>$null | Select-Object -First 1) }  # BIND_IP로 LAN IP 지정 가능
 if (-not $ts) { throw "Tailscale IP 없음(tailscale ip -4). 중단." }
 $ts = $ts.Trim()
 
