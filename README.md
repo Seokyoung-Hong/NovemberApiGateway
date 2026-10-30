@@ -19,10 +19,10 @@ python -m venv .venv
 - 기능 테스트 페이지: `http://127.0.0.1:8000/test`, 청중 페이지: `http://127.0.0.1:9000/live`.
 
 ## 테스트 서버 실행 (공개 모드, 계약 K절)
-- **서버는 Proxmox CT 1003(172.30.1.43)에서 구동**되고 NPM(`hack.sio2.kr`)이 앞단이다. 재배포: `bash scripts/deploy_test_server.sh 1003`.
+- **서버는 Proxmox CT 1003(172.30.1.43)에서 구동**되고 NPM(`sio2.kr`)이 앞단이다. 재배포: `bash scripts/deploy_test_server.sh 1003`.
 - (로컬 점검용) `.\scripts\run_test_server.ps1` - 이 PC에서 Gateway 8800·Mock 9800을 숨김 실행(Tailscale 필요, 현재 운영 경로 아님, 종료 `.\scripts\stop_test_server.ps1`).
 - 관리자 키는 `admin`(데모 서버 고정값, 공개 서버에서는 추측 가능하므로 접근 제한 필요). `/admin/*`·`/demo/*`·`/idp/token`에 `X-Admin-Key`. 로그 `novemberdeploy\logs\`.
-- 외부 접속 `https://hack.sio2.kr`(NPM 경유, 신뢰 프록시 NPM 172.30.1.101, 게이트웨이 CT `172.30.1.43:8000`, `/live*`는 같은 CT의 Mock `:9000`으로). 실제 AI 키는 넘기지 않으므로 Mock 모드만 동작.
+- 외부 접속 `https://sio2.kr`(NPM 경유, 신뢰 프록시 NPM 172.30.1.101, 게이트웨이 CT `172.30.1.43:8000`, `/live*`는 같은 CT의 Mock `:9000`으로). 실제 AI 키는 넘기지 않으므로 Mock 모드만 동작.
 
 ## 문서
 `docs/contract.md`(API 계약, 원본) · `docs/frontend-handoff.md`(프론트·디자인 인계) · `docs/demo-page-spec.md` · `docs/demo-scenario.md` · `docs/feature-spec.md` · `docs/architecture.md` · `docs/erd.md` · `docs/CHANGELOG-docs.md`(문서 점검 기록)

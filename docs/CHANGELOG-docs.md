@@ -76,3 +76,4 @@
 | contract.md N(신규), architecture.md 4-2, frontend-handoff.md | 공급자 폐기가 실패·무효여도 "차단·복구됨"으로 표시되던 문제 | 폐기 재시도·401 확인·`revoke_guard`·재활성 감시, 이벤트 `REVOKE_FAILED`·`REVOKE_CONFIRMED`·`REVOKE_NOT_EFFECTIVE`, `credentials[].revocation`, RECOVERED 조건, 청중 경로 즉시 차단과 그 한계 기록 |
 | contract.md O(신규), architecture.md 4-2, frontend-handoff.md | 서버가 판정 방식(사용량 %/건수)과 사용자 임계를 몰라 한도 하나로만 판정 | `detection_mode`·임계 6개 설정, 대시보드 `detection`·`credentials[].value`, 사고 `block_label`, vLLM 키 발급 허용, 미설정 시 레거시 유지 기록 |
 | architecture.md, key-security-design.md | KMS와 Vault가 한 노드로 합쳐져 역할이 불분명함 | KMS(Vault 자동 언실·마스터 키 보호)와 HashiCorp Vault(KV v2 키 보관·Transit·동적 시크릿·AppRole·감사)를 분리 표기. 다이어그램·2-4 저장소(S1·S2·S4·S5)·5-1 표(9,10행)·기술 스택·전환 표 갱신, 설계 문서에 3-1 권장 구성 추가. DB에는 Vault 경로만 저장 |
+| architecture.md, README.md, demo-scenario.md, frontend-handoff.md | 서비스 주소가 hack.sio2.kr | 서비스를 sio2.kr(NPM 프록시 호스트 18, 인증서 9번)로 옮기고 hack.sio2.kr는 301 리다이렉션 호스트로 전환. 프론트의 API 기본 주소 변경 필요를 명시 |

@@ -85,7 +85,7 @@ flowchart LR
         P3["OpenAI API"]
     end
 
-    NPM["Nginx Proxy Manager (Nginx)<br/>hack.sio2.kr · TLS 종료 · Let's Encrypt"]
+    NPM["Nginx Proxy Manager (Nginx)<br/>sio2.kr · TLS 종료 · Let's Encrypt"]
 
     subgraph PVE["Proxmox VE (집 사설 LAN) - LXC CT: Ubuntu 24.04 · systemd"]
         subgraph GW["게이트웨이 앱 - Python · FastAPI · Uvicorn"]
@@ -229,7 +229,7 @@ sequenceDiagram
 
 | # | 구간 | 전송 보호 | 인증·무결성 | 비고 |
 |---|---|---|---|---|
-| 1 | 사용자/청중 → NPM(`hack.sio2.kr`) | HTTPS (TLS, Let's Encrypt `*.sio2.kr`, HTTP/2, SSL 강제) | 사용자: Bearer API 토큰(서버는 SHA-256 해시만 보관) 또는 OIDC JWT(RS256) / 청중: 유출 키 + IP당 호출 속도 제한 | 허용 IP 대역은 선택(미설정 시 모두 허용) |
+| 1 | 사용자/청중 → NPM(`sio2.kr`) | HTTPS (TLS, Let's Encrypt `*.sio2.kr`, HTTP/2, SSL 강제) | 사용자: Bearer API 토큰(서버는 SHA-256 해시만 보관) 또는 OIDC JWT(RS256) / 청중: 유출 키 + IP당 호출 속도 제한 | 허용 IP 대역은 선택(미설정 시 모두 허용) |
 | 2 | 관리자 → NPM → `/admin/*`·`/demo/*` | HTTPS | `X-Admin-Key` 헤더(상수시간 비교), 공개 모드에서 `/docs` 비활성 | 데모 서버는 고정 키(약함) — 운영은 SSO·역할 기반 |
 | 3 | NPM → 게이트웨이(Proxmox CT) | 같은 사설 LAN(Proxmox 브리지)의 HTTP — 공개 인터넷에 노출되지 않음 | 신뢰 프록시 IP에서 온 `X-Forwarded-For`만 인정, CT 방화벽은 NPM만 허용 | 운영에서는 내부 TLS(mTLS) 권장 |
 | 4 | 게이트웨이 → AI 공급자(OpenAI·OpenRouter) | HTTPS (TLS 1.2+, 시스템 CA 검증) | 공급자 API 키(Bearer). WIF 크레덴셜은 STS 15분 단기 토큰 | 키는 Vault에서 복호화해 요청마다 사용 |
@@ -248,7 +248,7 @@ sequenceDiagram
 ## 6. 배포 구조
 - **로컬 개발**: Mock 9000 + 게이트웨이 8000, SQLite 파일, `scripts/dev.ps1`.
 - **목표 구성(아키텍처 결정)**: **Nginx Proxy Manager(NPM)가 게이트웨이의 단일 진입점**이다. NPM이 TLS(`*.sio2.kr` 와일드카드)를 종료하고 `hack.sio2.kr`를 **Proxmox 위의 게이트웨이 서버(LXC CT)**로 프록시하며, `/live`만 같은 CT의 Mock(9000 계열 포트)으로 라우팅한다. CT 안에서는 게이트웨이(8000)·Mock·SQLite를 systemd로 구동하고, CT 방화벽은 NPM의 접근만 허용한다. 배포는 `pve-deploy` 절차(CT 생성 → 앱 배포 → NPM 프록시 + 인증서)를 따른다.
-- **현재 구동 상태(실제 적용됨)**: 위 목표 구성이 적용되어 있다. Proxmox CT 1003(`hack-gw`, 172.30.1.43)에서 게이트웨이(8000)·Mock(9000)을 systemd로 구동하고, NPM 프록시 호스트 95(`hack.sio2.kr`, 인증서 `*.sio2.kr`)가 `172.30.1.43:8000`으로, `/live`는 `:9000`으로 프록시한다. 환경파일 `/opt/november/.env.server`(공개 모드, `TRUSTED_PROXIES`=NPM 172.30.1.101, 실제 AI 키 없음). 재배포는 `scripts/deploy_test_server.sh 1003`. (이 PC + Tailscale 구동 방식은 중단되었다. `scripts/run_test_server.ps1`은 로컬 점검용으로만 남긴다.)
+- **현재 구동 상태(실제 적용됨)**: 위 목표 구성이 적용되어 있다. Proxmox CT 1003(`hack-gw`, 172.30.1.43)에서 게이트웨이(8000)·Mock(9000)을 systemd로 구동하고, NPM 프록시 호스트 18(`sio2.kr`, 인증서 9번 `sio2.kr`)이 `172.30.1.43:8000`으로, `/live`는 `:9000`으로 프록시한다. `hack.sio2.kr`는 NPM **리다이렉션 호스트**(301, 경로·쿼리 보존, 인증서 `*.sio2.kr`)로 `https://sio2.kr`에 연결한다. 환경파일 `/opt/november/.env.server`(공개 모드, `TRUSTED_PROXIES`=NPM 172.30.1.101, 실제 AI 키 없음). 재배포는 `scripts/deploy_test_server.sh 1003`. (이 PC + Tailscale 구동 방식은 중단되었다. `scripts/run_test_server.ps1`은 로컬 점검용으로만 남긴다.)
 - 환경변수: `PUBLIC_MODE`, `ADMIN_KEY`, `TRUSTED_PROXIES`, `DEMO_MODE`(기본 1, 로컬 IdP·`X-Demo-Source-IP`), `MOCK_BASE_URL`, `DB_PATH`, `VAULT_KEY`, `LEAKED_KEY`, `IDP_ISSUER`, `UPSTREAM_API_KEY`·`UPSTREAM_BASE_URL`(Mock 실제 AI 패스스루), `LIVE_MODEL`, `OPENROUTER_MANAGEMENT_KEY`, `OPENAI_ADMIN_KEY`·`OPENAI_PROJECT_ID`. 테스트 서버는 실제 키 3종(`UPSTREAM_API_KEY`·`OPENROUTER_MANAGEMENT_KEY`·`OPENAI_ADMIN_KEY`)을 지운 채 실행한다(Mock만).
 
 ## 7. 그림 작성 가이드

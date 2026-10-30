@@ -1,5 +1,8 @@
 # 프론트·디자인 인계 (2026-10-31, 코드 기준)
 
+> **주소 변경**: 서비스 주소는 `https://sio2.kr`이다. 이전 주소 `https://hack.sio2.kr`는 301로 `sio2.kr`에 리다이렉트된다. 브라우저의 교차 출처 `fetch`(특히 POST·프리플라이트)는 리다이렉트를 따라가지 못할 수 있으므로 **API 기본 주소(`?server=` 값, `api.js` 설정)는 반드시 `https://sio2.kr`로 바꿔야 한다.**
+
+
 API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 필요한 것만 추렸다. 값·필드는 모두 코드와 로컬 실측(Mock 모드)으로 확인했다.
 
 ## 1. 한눈에
@@ -15,7 +18,7 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 - `GET /live` (Mock, `app/mock_provider/live.html`): 청중 채팅 최소 버전. 스타일 훅 `.live-*`, `body[data-state=active|busy|revoked|limited]`. `/live/stats` 폴링은 **없다**(정식 페이지에서 구현 필요).
 
 ## 2. 접속 정보
-- **테스트 서버**: `https://hack.sio2.kr` (게이트웨이, 공개 모드). 청중 페이지 `https://hack.sio2.kr/live`(NPM이 `/live*`만 Mock으로 보냄).
+- **테스트 서버**: `https://sio2.kr` (게이트웨이, 공개 모드). 청중 페이지 `https://sio2.kr/live`(NPM이 `/live*`만 Mock으로 보냄).
   - 공개 모드라 `/admin/*`·`/demo/*`·`/idp/token`은 헤더 `X-Admin-Key` 필수. 관리자 키는 `admin`(데모 서버 고정값, 공개 서버에서는 추측 가능하므로 접근 제한 필요). **키를 청중 페이지에 넣지 말 것.**
   - **경고: `admin`은 누구나 추측할 수 있는 약한 키다. 공개 서버에서는 NPM 접근 제한(IP·인증) 없이 열어 두지 말 것.**
   - 키 없이 쓰는 것: `/v1/chat/completions`(사용자 토큰), `/live`, `/live/config`, `/live/chat`, `/live/stats`, `/test`(페이지 자체).
@@ -194,4 +197,4 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 
 ## 부록. 기능 테스트 페이지
 - `/test` — 수동 조작 콘솔(모든 API를 눌러 보고 상태 확인). `/test/auto` — 버튼 하나로 전체 기능을 점검하고 PASS/FAIL/SKIP 표를 보여 주는 자동 점검 페이지. 두 페이지 모두 디자인이 없는 QA용이며 Admin Key를 입력해야 한다(두 페이지가 같은 localStorage 키를 공유).
-- 공개 서버: `https://hack.sio2.kr/test`, `https://hack.sio2.kr/test/auto`
+- 공개 서버: `https://sio2.kr/test`, `https://sio2.kr/test/auto`
