@@ -10,22 +10,24 @@
 | ID | 이름 | 설명 |
 |---|---|---|
 | U1 | 직원 클라이언트 | 직원 PC·서비스. OpenAI 호환 API로 게이트웨이를 호출. 공급자 키를 모름 |
-| U2 | 대표(관리자) | 대시보드·테스트 페이지로 크레덴셜·한도·허용 IP·토큰을 관리 |
+| U2 | 대표(관리자) | 대시보드·테스트 페이지로 크레덴셜·한도·허용 IP·토큰을 관리(대표 대시보드 화면은 미구현, 현재는 `/test`) |
 | U3 | 공격자 / 청중 | 유출된 키로 **공급자에 직접** 호출(게이트웨이 우회) |
 | U4 | 외부 IdP (OIDC) | GitHub Actions·Google·Entra 등. 직원 서비스에 단기 JWT 발급(WIF). PoC는 로컬 가짜 IdP |
 
 ### 2-2. 게이트웨이 앱 (FastAPI, 한 프로세스, 포트 8000/8800)
 | ID | 모듈 | 책임 |
 |---|---|---|
-| G1 | `gateway/router.py` — **중계·접근통제** | `/v1/chat/completions` OpenAI 호환 중계. 검사 순서: 출발 IP(허용 CIDR) → 허니키 일치 → API 토큰 또는 WIF JWT → 서비스 상태. 거부 로그 기록 |
-| G2 | `gateway/router.py` — **관리자 API** | 크레덴셜·CIDR·서비스·토큰·설정 CRUD (`/admin/*`, X-Admin-Key) |
+| G1 | `gateway/router.py` — **중계·접근통제** | `/v1/chat/completions` OpenAI 호환 중계. 검사 순서: 허니키 일치 → 허니키 IP 임시 차단 → 출발 IP(허용 CIDR) → WIF JWT 또는 API 토큰 → 서비스 상태 → PRIMARY 크레덴셜 존재. 거부 로그 기록(허니키는 별도 `honeykey_event`) |
+| G2 | `gateway/router.py` — **관리자 API** | 크레덴셜·CIDR·서비스(정지/재개)·토큰·설정·허니키 목록·거부 로그, 실제 공급자 키 프로비저닝(`/admin/{provider}/provision`) (`/admin/*`, X-Admin-Key) |
 | G3 | `wif_inbound.py` — **직원 측 WIF** | RS256 JWT 검증(서명·만료·audience·issuer), 신뢰 규칙(issuer+subject 패턴→서비스), 로컬 데모 IdP(`/idp/*`) |
 | G4 | `providers.py` — **공급자 어댑터** | mock / openrouter / openai 어댑터. `fetch_usage`(키별 누적: 호출 수·토큰·비용 중 있는 값), `revoke`, 응답 비용 추출, 지연(`lag_s`) |
 | D1 | `detector/router.py` — **탐지·대응 워커** | 2초마다 공급자 사용량 조회 → 게이트웨이 기록과 시점 정렬 비교 → 판정(NORMAL/SUSPECT/WARNING/BREACH) → 자동 대응 |
-| D2 | `detector/router.py` — **대시보드 API·데모 제어** | 상태·차액·시계열·사고·이벤트 조회, 공격 시뮬레이터, 리셋, 허니키 호출 |
+| D2 | `detector/router.py` — **대시보드 API·데모 제어** | 상태·차액·시계열·사고·이벤트 조회, 공격 시뮬레이터(Mock 전용), 리셋(`/demo/reset`, `/demo/reset-openrouter`·`-openai`), 정리(`/demo/cleanup-*`), 허니키 호출 |
 | U5 | `usage.py` + `pricing.py` — **사용량 집계·예측** | 서비스별 토큰·비용 집계, 모델별 단가표 기반 예상 비용, 선형 월말 예측, 월 예산 |
 | T1 | `testpage.py` + `static/test.html` | 디자인 없는 기능 테스트 페이지 `/test` |
-| C1 | `contract.py`, `db.py`, `vault.py` | 공용 상수·판정 함수 / SQLite 스키마 / API Key 암호화(Fernet) |
+| C1 | `contract.py`, `db.py`, `vault.py` | 공용 상수·판정 함수·`.env` 로드 / SQLite 스키마 / API Key 암호화(Fernet) |
+| C2 | `clientip.py` | 관리자 키 비교, 출발 IP 결정(신뢰 프록시 XFF·`X-Demo-Source-IP`), 공개 모드 가드(`/demo/*`·`/idp/token`). 게이트웨이·Mock 공용 |
+| C3 | `main.py` | 앱 조립(라우터 5개 등록, CORS 전체 허용, 시작 시 `init_db`·워커 기동) |
 
 ### 2-3. 별도 서비스
 | ID | 이름 | 설명 |
@@ -42,7 +44,7 @@
 ### 2-5. 외부 AI 공급자
 | ID | 이름 | 사용량 조회 | 키 폐기 | 반영 지연(실측) |
 |---|---|---|---|---|
-| P1 | Mock | `/usage` | `/revoke` | 2초 / 즉시 |
+| P1 | Mock | `/usage` | `/revoke` | 2초 / 즉시(어댑터 값 0.5초) |
 | P2 | OpenRouter | `GET /keys/{hash}` 사용액(USD) | `PATCH disabled` | 약 6초 / 약 20초 (호출 수 API는 당일 미지원) |
 | P3 | OpenAI | Usage API `num_model_requests` 1분 버킷 | 서비스 계정 삭제 | 수 분(381초 실측, 이후 측정 미확인) / 약 3초 |
 
@@ -57,7 +59,7 @@ flowchart LR
     end
 
     subgraph GW[게이트웨이 앱 — FastAPI 8000]
-        G1[중계·접근통제\nIP→허니키→토큰/WIF→서비스]
+        G1[중계·접근통제\n허니키→IP→토큰/WIF→서비스]
         G3[WIF 검증\nJWT·신뢰규칙]
         G2[관리자 API]
         D1[탐지·대응 워커\n2초 주기]
@@ -98,9 +100,9 @@ flowchart LR
 ## 4. 핵심 시퀀스
 ### 4-1. 정상 호출
 1. 직원이 `Authorization: Bearer <API 토큰 또는 JWT>`로 `POST /v1/chat/completions`.
-2. G1: 출발 IP ∈ 허용 CIDR? → 허니키 아님? → 토큰 해시 일치 또는 G3가 JWT 검증 → 서비스 ACTIVE?
+2. G1: 허니키 아님? → 허니키로 차단된 IP 아님? → 출발 IP ∈ 허용 CIDR? → G3가 JWT 검증 또는 토큰 해시 일치 → 서비스 ACTIVE?
 3. 현재 `PRIMARY ACTIVE` 크레덴셜 선택, S2에서 키 복호화(WIF 크레덴셜은 STS 단기 토큰) → 공급자로 중계, 스트리밍 포함.
-4. 응답 `usage`(또는 비용)로 `usage_log` 1행 기록 → 응답 반환.
+4. 응답이 200이고 `usage`(또는 비용)가 있으면 `usage_log` 1행 기록 → 응답 반환(업스트림 401·네트워크 오류는 502).
 
 ### 4-2. 탐지와 자동 대응
 ```mermaid
@@ -118,13 +120,13 @@ sequenceDiagram
         W->>DB: provider_usage 적재, usage_log(스냅샷−지연까지) 합산
         W->>W: 차액 = 공급자 − 게이트웨이 − 허용오차 → judge()
     end
-    Note over W: 차액 ≥ 한도의 70% → BREACH
+    Note over W: 차액 ≥ 한도의 70%(실제 공급자 35%) → BREACH
     W->>A: revoke(키)
     A->>P: 키 폐기/비활성화
-    W->>DB: 크레덴셜 REVOKED, 예비키 PRIMARY 승격, 사고·이벤트 기록
+    W->>DB: 사고 생성(폐기 직전), 크레덴셜 REVOKED, 예비키 PRIMARY 승격, 이벤트·검증(1초 간격 연출)
     X->>P: 호출 → 401
 ```
-- 판정: 한도(허용 무단 호출 수, 기본 100)의 10% SUSPECT / 50% WARNING / 70% BREACH. 공급자 지연이 큰 경우(OpenRouter) 비율을 낮춘다.
+- 판정: 한도(허용 무단 호출 수, 기본 100)의 10% SUSPECT / 50% WARNING / 70% BREACH. 공급자 지연이 큰 경우(OpenRouter·OpenAI) 비율을 5% / 20% / 35%로 낮춘다(`contract.RATIOS`).
 - 안전 경로: 공급자 값이 게이트웨이 **전체** 기록을 넘으면 확실한 유출(정상 호출은 항상 게이트웨이에 먼저 기록되므로 오탐 없음).
 - 비용만 주는 공급자는 비용 차이로 비교하고 호출 수를 평균 호출 비용으로 추정한다(`calls_estimated`).
 - 분 버킷을 주는 공급자(OpenAI)는 반영이 끝난 버킷 경계까지 누적 비교.
@@ -149,7 +151,7 @@ sequenceDiagram
 ## 6. 배포 구조
 - **로컬 개발**: Mock 9000 + 게이트웨이 8000, SQLite 파일, `scripts/dev.ps1`.
 - **테스트 서버(`hack.sio2.kr`)**: 이 PC에서 게이트웨이 8800·Mock 9800을 Tailscale IP로 바인드 → Nginx Proxy Manager(Tailscale 노드)가 `hack.sio2.kr`를 이 PC로 프록시하고 `/live`만 9800으로 라우팅. 인증서는 `*.sio2.kr`.
-- 환경변수: `PUBLIC_MODE`, `ADMIN_KEY`, `TRUSTED_PROXIES`, `MOCK_BASE_URL`, `DB_PATH`, `UPSTREAM_API_KEY`(실제 AI 패스스루).
+- 환경변수: `PUBLIC_MODE`, `ADMIN_KEY`, `TRUSTED_PROXIES`, `DEMO_MODE`(기본 1, 로컬 IdP·`X-Demo-Source-IP`), `MOCK_BASE_URL`, `DB_PATH`, `VAULT_KEY`, `LEAKED_KEY`, `IDP_ISSUER`, `UPSTREAM_API_KEY`·`UPSTREAM_BASE_URL`(Mock 실제 AI 패스스루), `LIVE_MODEL`, `OPENROUTER_MANAGEMENT_KEY`, `OPENAI_ADMIN_KEY`·`OPENAI_PROJECT_ID`. 테스트 서버는 실제 키 3종(`UPSTREAM_API_KEY`·`OPENROUTER_MANAGEMENT_KEY`·`OPENAI_ADMIN_KEY`)을 지운 채 실행한다(Mock만).
 
 ## 7. 그림 작성 가이드
 - **레이어**: 행위자 → (NPM) → 게이트웨이 앱(중계·탐지·관리) → 어댑터 → 공급자, 좌우로 저장소(SQLite·Vault)를 둔다.

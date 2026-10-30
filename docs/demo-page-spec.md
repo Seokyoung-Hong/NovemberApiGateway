@@ -27,7 +27,7 @@
 | `busy` | 응답 대기 | 전송 버튼 비활성 + 로딩 표시 |
 | `limited` | `POST /live/chat` → 429 `rate_limited` | "잠시 후 다시 시도하세요" 토스트, 몇 초 뒤 자동 복귀 |
 | **`revoked`** | `POST /live/chat` → **401 `revoked`**, 또는 `/live/stats`의 `key_status:"revoked"` | **전체 화면 알림(모달/배너): "🚫 차단되었습니다 — 이 키는 폐기되었습니다 (401)"**. 입력창·전송 버튼 비활성. 이미 보낸 대화 내용은 유지 |
-| `error` | 네트워크 오류·5xx | "연결에 실패했습니다" + 재시도 버튼(차단과 구분) |
+| `error` | 네트워크 오류·5xx(OpenRouter 모드 502 `upstream_error`) | "연결에 실패했습니다" + 재시도 버튼(차단과 구분) |
 
 - **차단 감지는 두 경로**: ① 전송 응답이 401일 때 즉시 ② 메시지를 보내지 않는 사용자도 `/live/stats` 폴링으로 `key_status`가 `revoked`가 되면 알림이 떠야 한다(전체 청중이 동시에 같은 순간 차단을 보게 하기 위함).
 - 차단 알림은 **한 번만** 뜨고 닫을 수 있어도 입력은 계속 막혀 있어야 한다. 새로고침해도 `/live/stats`가 `revoked`면 처음부터 차단 상태로 표시.
@@ -36,14 +36,14 @@
 
 ### API
 - `GET /live/config` → `{key, model}`
-- `POST /live/chat` `{key, message}` → 200 `{reply, status}` / 401 `{error:"revoked"}` / 429 `{error:"rate_limited"}`
+- `POST /live/chat` `{key, message}` → 200 `{reply, status}` / 401 `{error:"revoked"}` / 429 `{error:"rate_limited"}` / 502 `{error:"upstream_error"}`(OpenRouter 모드)
 - `GET /live/stats` → `{participants, calls, key_status:"active"|"revoked", updated_at}`
-- 제한(서버 적용): 메시지 300자, IP당 20초 10회. 프론트도 300자 입력 제한을 표시.
+- 제한(서버 적용): 메시지 300자(초과분은 서버가 자름), IP당 20초 10회. 프론트도 300자 입력 제한을 표시.
 - 스타일 훅: 클래스 `.live-*`, 상태는 `body[data-state=active|busy|revoked|limited]` (현재 구현과 호환 유지).
 
 ## 3. 페이지 B 요구사항 (선택)
-- 직원 토큰(`POST /demo/reset` 응답의 `tokens`)을 입력/주입해 `POST /v1/chat/completions`로 호출하는 채팅 화면.
-- 장면 5에서 A는 "차단되었습니다"가 뜨는 동안 **B는 계속 응답이 오는 것**을 보여 준다(예비키 전환). 오류가 나면 상태 줄에 코드 표시(`403 ip_not_allowed`, `401 invalid_token`, `503 no_active_credential`).
+- 직원 토큰(`POST /demo/reset` 응답의 `tokens`, 리셋마다 바뀜)을 입력/주입해 `POST /v1/chat/completions`로 호출하는 채팅 화면.
+- 장면 5에서 A는 "차단되었습니다"가 뜨는 동안 **B는 계속 응답이 오는 것**을 보여 준다(예비키 전환). 오류가 나면 상태 줄에 코드 표시(`403 ip_not_allowed`·`ip_blocked`·`service_suspended`, `401 invalid_token`·`wif_*`, `502 upstream_error`, `503 no_active_credential`). 전체 표는 `frontend-handoff.md` 5절.
 
 ## 4. 발표 흐름과의 연결 (`demo-scenario.md` 장면 4~6)
 1. 장면 4: 청중이 QR로 페이지 A에 접속해 채팅(호출 수가 대시보드에서 오른다).
@@ -60,4 +60,4 @@
 
 ## 6. 구현 주의
 - 차단 시점은 공급자별로 다르다. Mock은 즉시, OpenRouter는 키 비활성화 반영까지 약 20초 걸려 그동안 청중 호출이 계속 200일 수 있다. 알림은 서버가 401을 돌려주는 시점(또는 `key_status`)에 맞춰 뜨는 것이 정상이다.
-- `/live/*`는 Mock Provider 서버(기본 9000)에서 서빙된다. 공개 터널은 이 포트를 노출한다.
+- `/live/*`는 Mock Provider 서버(기본 9000, 테스트 서버는 9800)에서 서빙된다. 공개 터널·NPM은 이 포트의 `/live*`만 노출한다. 현재 최소 페이지(`live.html`)는 `/live/stats`를 폴링하지 않으므로 ② 경로는 정식 페이지에서 새로 구현해야 한다.

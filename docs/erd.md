@@ -10,9 +10,10 @@ erDiagram
     CREDENTIAL ||--o{ INCIDENT : "침해 대상 (HONEYKEY는 NULL)"
     CREDENTIAL ||--o| INCIDENT : "new_credential_id (승격된 예비키)"
     HONEYKEY ||--o{ HONEYKEY_EVENT : "접근됨"
+    SERVICE ||--o{ TRUSTED_IDENTITY : "WIF 신뢰 규칙 매핑"
 
     SETTING {
-        string key PK "loss_limit_krw 등"
+        string key PK "unauthorized_call_limit|loss_limit_krw|monthly_budget_krw|wif_audience"
         string value
     }
     ALLOWED_CIDR {
@@ -35,20 +36,20 @@ erDiagram
     }
     CREDENTIAL {
         int id PK
-        string provider "문자열 (예: mock). PROVIDER 테이블 없음"
+        string provider "mock|openrouter|openai. PROVIDER 테이블 없음"
         string auth_mode "API_KEY|WIF"
         string role "PRIMARY|STANDBY"
         string status "ACTIVE|REVOKED"
         string secret_enc "API_KEY: vault 암호문, WIF: NULL"
         string masked
         string audience "WIF 전용"
-        string provider_ref "공급자 사용량/폐기 식별자"
+        string provider_ref "공급자 사용량/폐기 식별자: mock API_KEY=키 원문, WIF=wif:audience, openrouter=키 hash, openai=key_id|sa_id|project_id"
         int replaced_by_id FK "nullable"
         string created_at
     }
     USAGE_LOG {
         int id PK
-        int service_id FK
+        int service_id FK "nullable"
         int credential_id FK
         string model
         int input_tokens
@@ -62,12 +63,13 @@ erDiagram
         int credential_id FK
         real cost_krw "누적값 스냅샷"
         int tokens
+        int requests "공급자 누적 호출 수(OpenRouter는 추정치)"
         real at
     }
     ACCESS_DENIED_LOG {
         int id PK
         string source_ip
-        string reason "ip_not_allowed|invalid_token|service_suspended"
+        string reason "ip_not_allowed|invalid_token|service_suspended|ip_blocked|wif_*"
         string token_masked
         real at
     }
@@ -79,8 +81,10 @@ erDiagram
         real detected_at
         real blocked_at
         real resolved_at
-        real loss_krw
-        real limit_krw
+        real loss_krw "참고 금액"
+        real limit_krw "참고 금액"
+        int loss_calls "설명되지 않는 호출 수(판정 기준)"
+        int limit_calls "차단 당시 한도"
         int new_credential_id FK "nullable"
         string timeline "JSON [{at,step,detail,ok}]"
     }
@@ -105,13 +109,23 @@ erDiagram
         string message
         string data "JSON, nullable"
     }
+    TRUSTED_IDENTITY {
+        int id PK
+        string issuer
+        string subject_pattern "fnmatch 글롭"
+        string audience "nullable, 없으면 setting wif_audience"
+        int service_id FK
+        string jwks_uri "nullable, 로컬 IdP면 NULL"
+        string created_at
+    }
 ```
 
-원본은 `app/db.py`의 `SCHEMA`. SETTING·ALLOWED_CIDR·ACCESS_DENIED_LOG·EVENT는 FK 없는 독립 테이블이라 관계선을 생략했다. 시간 컬럼은 `at`류는 epoch 초(real), `created_at`류는 ISO 문자열.
+원본은 `app/db.py`의 `SCHEMA`. SETTING·ALLOWED_CIDR·ACCESS_DENIED_LOG·EVENT는 FK 없는 독립 테이블이라 관계선을 생략했다. 시간 컬럼은 `at`류는 epoch 초(real), `created_at`류는 ISO 문자열. FK는 논리 관계이며 SQL에 `REFERENCES` 제약은 없다(SQLite, 코드가 정합성 유지). 인덱스: `usage_log(credential_id, at)`, `provider_usage(credential_id, at)`.
 
 ## 설계 메모
-- **PROVIDER 테이블 없음**: 공급자는 `credential.provider` 문자열(PoC는 `mock`). 인증 방식은 `credential.auth_mode`(API_KEY|WIF).
-- **RECONCILIATION 테이블 없음**: 대조는 워커가 `usage_log` 합 vs 최신 `provider_usage`로 매 틱 계산(`effective_diff`/`judge`). 결과는 `event`와 `incident`로만 남는다.
+- **PROVIDER 테이블 없음**: 공급자는 `credential.provider` 문자열(`mock`|`openrouter`|`openai`, 어댑터 `app/providers.py`). 인증 방식은 `credential.auth_mode`(API_KEY|WIF).
+- **RECONCILIATION 테이블 없음**: 대조는 워커가 `usage_log` 행 수 vs 공급자 보고 호출 수(`provider_usage.requests`)로 매 틱 계산(`effective_calls_diff`/`judge`, 금액 `effective_diff`는 참고). 결과는 `event`와 `incident`로만 남는다.
 - **탐지 흐름**: BREACH → `incident` 생성(credential당 1개) → 공급자 폐기 → `credential` REVOKED + STANDBY를 PRIMARY 승격(`replaced_by_id`, `new_credential_id`).
+- **직원 측 WIF**: `trusted_identity`(issuer + sub 글롭 → service). 공급자 쪽 WIF(`credential.auth_mode=WIF`)와 별개다. `/demo/reset`이 이 테이블도 비운다.
 - **허니키**: `honeykey_event` 발생 시 `incident(trigger_type=HONEYKEY, credential_id=NULL)`와 `event(HONEYKEY)` 기록.
 - **키 원문**: API_KEY는 `secret_enc`(vault 암호문)만 저장, WIF는 `secret_enc`가 없고 단기 토큰을 Mock STS에서 발급.
