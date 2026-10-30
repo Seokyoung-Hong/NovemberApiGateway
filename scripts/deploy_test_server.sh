@@ -14,6 +14,7 @@ ssh "$H" 'bash -s' <<'EOF'
 set -euo pipefail
 N=/opt/november
 mkdir -p $N/data
+chmod 700 $N/data  # DB(키 암호문)·live_key.json은 소유자만
 [ -x $N/venv/bin/python ] || python3 -m venv $N/venv
 $N/venv/bin/pip install -q -r $N/src/requirements.txt
 if [ ! -f $N/.env.server ]; then  # 있으면 보존(수동 추가 값 유지)
@@ -53,4 +54,5 @@ for u in http://localhost:8000/test http://localhost:9000/live/config; do
   for i in $(seq 30); do curl -fs -o /dev/null "$u" && break; sleep 1; done
   echo "$(curl -sS -o /dev/null -w '%{http_code}' "$u") $u"
 done
+chmod 600 $N/data/gateway.db* 2>/dev/null || true  # 기동 후 생긴 db·-wal·-shm 포함
 EOF

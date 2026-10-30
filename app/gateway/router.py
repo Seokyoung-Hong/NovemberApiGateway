@@ -251,7 +251,7 @@ def create_credential(b: CredIn):
     if b.provider == "vllm" and not (b.auth_mode == "API_KEY" and b.secret):
         raise HTTPException(400, "vllm은 API_KEY + secret 필요")
     if b.auth_mode == "API_KEY" and b.secret:
-        enc, masked, ref = vault.encrypt(b.secret), mask_key(b.secret), b.secret
+        enc, masked, ref = vault.encrypt(b.secret), mask_key(b.secret), providers.key_ref(b.secret)
     elif b.auth_mode == "WIF" and b.audience:
         enc, masked, ref = None, f"wif:{b.audience}", f"wif:{b.audience}"
     else:

@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS credential (
   secret_enc TEXT,                                                       -- API_KEY: vault 암호문, WIF: NULL
   masked TEXT NOT NULL,
   audience TEXT,                                                         -- WIF 전용
-  provider_ref TEXT NOT NULL,   -- Mock 사용량/폐기 식별자: API_KEY=키 문자열 자체, WIF='wif:'||audience
+  provider_ref TEXT NOT NULL,   -- Mock 사용량/폐기 식별자: API_KEY='sha256:'||hex(키)(구 DB는 원문), WIF='wif:'||audience
   replaced_by_id INTEGER, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS usage_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT, service_id INTEGER, credential_id INTEGER NOT NULL,
@@ -77,3 +77,10 @@ def init_db() -> None:
         c.executescript(SCHEMA)
         c.execute("INSERT OR IGNORE INTO setting(key,value) VALUES('loss_limit_krw','100000')")
         c.execute("INSERT OR IGNORE INTO setting(key,value) VALUES('unauthorized_call_limit','100')")
+    # 키 암호문·해시가 든 DB는 소유자만(폴더 700, 파일 600). 폴더가 cwd면 건드리지 않음. Windows 등 실패는 무시.
+    d = os.path.dirname(DB_PATH)
+    for p, mode in ([(d, 0o700)] if d else []) + [(DB_PATH + s, 0o600) for s in ("", "-wal", "-shm")]:
+        try:
+            os.chmod(p, mode)
+        except OSError:
+            pass

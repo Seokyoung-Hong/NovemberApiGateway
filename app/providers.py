@@ -8,7 +8,9 @@
 - (실제 공급자) provision(http, role, name, limit_usd) -> (원문 키, provider_ref), cleanup(http) -> 삭제 수
 """
 import asyncio
+import hashlib
 import os
+import re
 import secrets
 import time
 from datetime import datetime
@@ -29,6 +31,22 @@ PRICE_IN, PRICE_OUT = 0.15e-6, 0.60e-6
 def _our_name(role: str, name: str | None) -> str:
     n = name or f"{role}-{secrets.token_hex(3)}"
     return n if n.startswith(OUR_PREFIX) else OUR_PREFIX + n
+
+
+def key_ref(raw: str) -> str:
+    """DB provider_ref에 남기는 API 키 식별자(원문 대신 해시)."""
+    return "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
+
+
+def owner_of(cred) -> str:
+    """공급자 /usage·/revoke의 owner(=키 원문). 해시 ref면 secret_enc 복호화, 구 DB 원문·wif: ref는 그대로."""
+    ref = cred["provider_ref"]
+    return vault.decrypt(cred["secret_enc"]) if ref.startswith("sha256:") and cred["secret_enc"] else ref
+
+
+def scrub(msg: str) -> str:
+    """로그용: URL의 owner= 값과 sk- 키 원문을 가린다."""
+    return re.sub(r"sk-[\w-]{6,}", "sk-***", re.sub(r"owner=[^&'\"\s)]+", "owner=***", msg))
 
 
 def _token_cost_usd(u: dict) -> float:
@@ -69,13 +87,13 @@ class Mock:
     chat_url = f"{MOCK_BASE_URL}/v1/chat/completions"
 
     async def fetch_usage(self, http, cred):
-        u = (await http.get(f"{MOCK_BASE_URL}/usage", params={"owner": cred["provider_ref"]})).json()
+        u = (await http.get(f"{MOCK_BASE_URL}/usage", params={"owner": owner_of(cred)})).json()
         return {"requests": u.get("requests", 0), "tokens": u["tokens"], "cost_usd": u["cost_krw"] / USD_TO_KRW}
 
     probe_revoked = _probe
 
     async def revoke(self, http, cred):
-        return (await http.post(f"{MOCK_BASE_URL}/revoke", json={"owner": cred["provider_ref"]})).status_code == 200
+        return (await http.post(f"{MOCK_BASE_URL}/revoke", json={"owner": owner_of(cred)})).status_code == 200
 
     def prepare(self, body):
         return body
@@ -217,14 +235,14 @@ class Vllm(Mock):
         return {"X-Admin-Key": VLLM_ADMIN_KEY} if VLLM_ADMIN_KEY else {}
 
     async def fetch_usage(self, http, cred):
-        r = await http.get(f"{VLLM_BASE_URL}/usage", params={"owner": cred["provider_ref"]}, headers=self._h())
+        r = await http.get(f"{VLLM_BASE_URL}/usage", params={"owner": owner_of(cred)}, headers=self._h())
         r.raise_for_status()
         u = r.json()
         return {"requests": u.get("requests", 0), "tokens": u.get("tokens", 0),
                 "cost_usd": float(u.get("cost_krw") or 0) / USD_TO_KRW}
 
     async def revoke(self, http, cred):
-        r = await http.post(f"{VLLM_BASE_URL}/revoke", json={"owner": cred["provider_ref"]}, headers=self._h())
+        r = await http.post(f"{VLLM_BASE_URL}/revoke", json={"owner": owner_of(cred)}, headers=self._h())
         return r.status_code == 200
 
     def prepare(self, body):
@@ -234,7 +252,7 @@ class Vllm(Mock):
 
     async def provision(self, http, role, name=None, limit_usd=None):
         raw = f"sk-vllm-{'K1' if role == 'PRIMARY' else 'S1'}-{secrets.token_hex(4)}"
-        return raw, raw
+        return raw, key_ref(raw)
 
     async def cleanup(self, http):  # 폐기할 외부 키 없음. 공급자 계량·폐기 목록 초기화(404·연결 실패 무시)
         try:

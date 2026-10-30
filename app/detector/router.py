@@ -189,7 +189,7 @@ async def worker_loop():
                 async with lock:
                     await tick(http)
             except Exception as e:  # 워커는 죽지 않는다
-                print("detector tick error:", repr(e))
+                print("detector tick error:", providers.scrub(repr(e)))
             await asyncio.sleep(POLL_INTERVAL_S)
 
 
@@ -207,7 +207,7 @@ async def tick(http):
         try:
             u = await ad.fetch_usage(http, cred)
         except httpx.HTTPError as e:  # 한 공급자 조회 실패가 다른 크레덴셜 판정을 막지 않게
-            print("usage fetch error:", cred["id"], repr(e)[:120])
+            print("usage fetch error:", cred["id"], providers.scrub(repr(e))[:120])
             continue
         now = time.time()
         with get_conn() as c:
@@ -299,7 +299,7 @@ async def block_live(http, cred):
         await http.post(f"{MOCK}/revoke", json={"owner": vault.decrypt(cred["secret_enc"])},
                         headers={"X-Admin-Key": ADMIN_KEY})
     except Exception as e:
-        print("live block error:", repr(e)[:120])
+        print("live block error:", providers.scrub(repr(e))[:120])
 
 
 async def respond(http, cred, diff, det, val, diff_krw, lim_krw):
@@ -698,7 +698,7 @@ async def _reset(provider: str):
                 for name, role in (("K1", "PRIMARY"), ("S1", "STANDBY")):
                     key = LEAKED_KEY if name == "K1" else f"sk-mock-{name}-{secrets.token_hex(4)}"
                     c.execute("INSERT INTO credential(provider,auth_mode,role,secret_enc,masked,provider_ref,created_at) "
-                              "VALUES('mock','API_KEY',?,?,?,?,?)", (role, vault.encrypt(key), mask_key(key), key, now))
+                              "VALUES('mock','API_KEY',?,?,?,?,?)", (role, vault.encrypt(key), mask_key(key), providers.key_ref(key), now))
                 c.execute("INSERT INTO credential(provider,auth_mode,role,masked,audience,provider_ref,created_at) "
                           "VALUES('mock','WIF','STANDBY',?,'novem-wif','wif:novem-wif',?)", ("WIF:novem-wif", now))
             for name in ("userA", "userB"):
