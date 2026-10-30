@@ -98,3 +98,12 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
 - 폐기: `PATCH /keys/{hash}` `{disabled:true}`. 타임라인 REVOKE_PROVIDER_KEY 상세에 "공급자 반영까지 약 20초 소요". 승격·사고·이벤트는 Mock과 같다. VERIFIED는 승격 키로 OpenRouter 실제 호출 1건(`max_tokens=1`). 최종 손실 재계산은 폐기 28초 후(`OPENROUTER_REVOKE_LAG_S` 20 + 8).
 - 지연 특성(실측): 사용액 반영 약 6초, 비활성화 후 401까지 최대 약 20초(그 사이 호출은 200). 그래서 탐지까지 수십 초, 손실은 차단선을 넘을 수 있다. 금액 참고값(`diff_krw`)은 `TOLERANCE_KRW`(5,000원)보다 작아 보통 0으로 보인다.
 - 라이브(Mock `/live/chat`): 키가 `sk-or-`로 시작하면 **현재 공개한 키(`/live/config`)와 같을 때만** OpenRouter에 직접 전달(`LIVE_MODEL` 기본 `openai/gpt-4o-mini`, `max_tokens` 150, 기존 속도 제한 유지). OpenRouter 401/403 → 401 `{"error":"revoked"}`, 그 외 오류 → 502 `{"error":"upstream_error","upstream_status"}`. `/live/stats`의 `key_status`는 마지막 OpenRouter 응답이 401/403이면 `revoked`. Mock 키 경로는 그대로.
+
+## H. 사용량 집계·예측
+`app/usage.py`(라우터 `/admin/usage/*`, X-Admin-Key 필요), 단가표 `app/pricing.py`. `usage_log`의 `status_code=200`만 집계. 기간은 서버 로컬 시간: day=오늘 0시~, week=최근 7일, month=이번 달 1일~, all=전체. `from`/`to`는 UTC ISO.
+- `cost_krw` = usage_log에 기록된 값(OpenRouter `usage.cost` 실제 비용 또는 게이트웨이 계산). `estimated_cost_krw` = 단가표(USD/1M 토큰, 입력·출력 분리) × 토큰 × `USD_TO_KRW`로 게이트웨이가 재계산한 값 → 공급자가 비용만 주거나 아무것도 안 줘도 서비스별 예상 비용 산출 가능. 모델명의 `openai/` 같은 접두는 떼고 찾으며, 표에 없는 모델(mock 등)은 gpt-4o-mini 단가로 계산하고 `models[].estimated:true`.
+- `GET /admin/usage/summary?range=day|week|month|all` → `{range,from,to,total:{calls,input_tokens,output_tokens,cost_krw,estimated_cost_krw},services:[{service_id,name,...같은 합계,models:[{model,...같은 합계,estimated}]}]}`
+- `GET /admin/usage/timeseries?range=...&bucket=hour|day` → `{range,bucket,from,to,services:[{service_id,name,points:[{t:"2026-10-31T01:00"|"2026-10-31",calls,tokens,cost_krw}]}]}` (t는 로컬 시간, 호출 없는 버킷은 생략)
+- `GET /admin/usage/forecast?window_hours=1` → `{window_hours,rate_per_hour:{calls,tokens,cost_krw},projected:{end_of_day_cost_krw,end_of_month_cost_krw},per_service:[{service_id,name,rate_cost_krw_per_hour,projected_month_cost_krw}],budget:{monthly_budget_krw|null,hours_to_budget|null},method:"linear",note}`.
+  예측 = 이미 쓴 금액(오늘/이번 달) + 최근 window 시간당 속도 × 남은 시간. `hours_to_budget` = (예산 − 이번 달 사용액) / 시간당 비용(이미 초과면 0, 속도 0이면 null). 한계: 단순 선형, 시간대·요일 패턴·급증(공격) 미반영, 창이 짧으면 변동 큼, 단가표는 수동 관리(공급자 가격 변경 시 갱신 필요).
+- `GET /admin/usage/budget` → `{monthly_budget_krw}`; `PUT` `{monthly_budget_krw: 양의 정수|null}`(null=해제, 0 이하 400). setting `monthly_budget_krw`에 저장.

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.db import init_db
 from app.detector.router import router as detector_router, worker_loop
 from app.gateway.router import router as gateway_router
+from app.usage import router as usage_router
 
 
 @asynccontextmanager
@@ -22,3 +23,4 @@ app = FastAPI(title="NovemberAiGateway", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 app.include_router(gateway_router)
 app.include_router(detector_router)
+app.include_router(usage_router)
