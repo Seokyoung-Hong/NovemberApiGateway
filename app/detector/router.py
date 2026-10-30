@@ -10,6 +10,7 @@ import httpx
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from app import providers, vault
+from app.clientip import admin_ok
 from app.contract import (ADMIN_KEY, ATTACK_MAX_TOKENS, ATTACK_RPS, CALL_COST_MAX_USD, CALL_COST_MIN_USD,
                           CALL_COST_RECENT_N, DEFAULT_CALL_COST_USD, DEFAULT_LIMIT_CALLS, HYSTERESIS_S, LEAKED_KEY,
                           LIVE_KEY_PATH, OPENROUTER_LIMIT_CALLS, POLL_INTERVAL_S, PROVIDERS, RATIOS, TOLERANCE_CALLS,
@@ -35,7 +36,7 @@ def iso(t):
 
 
 def admin(x_admin_key: str = Header(None)):
-    if x_admin_key != ADMIN_KEY:
+    if not admin_ok(x_admin_key):
         raise HTTPException(401, "bad admin key")
 
 
@@ -471,7 +472,7 @@ async def _reset(provider: str):
         real = provider != "mock"
         keys = []  # (role, 원문, provider_ref). 네트워크는 DB 트랜잭션 밖에서
         async with httpx.AsyncClient(timeout=30) as http:
-            (await http.post(f"{MOCK}/demo/reset")).raise_for_status()
+            (await http.post(f"{MOCK}/demo/reset", headers={"X-Admin-Key": ADMIN_KEY})).raise_for_status()
             if real:
                 ad = providers.get(provider)
                 await ad.cleanup(http)
@@ -487,7 +488,7 @@ async def _reset(provider: str):
         now = datetime.now(timezone.utc).isoformat()
         tokens = {}
         with get_conn() as c:
-            for t in ("setting", "allowed_cidr", "service", "gateway_token", "credential", "usage_log",
+            for t in ("trusted_identity", "setting", "allowed_cidr", "service", "gateway_token", "credential", "usage_log",
                       "provider_usage", "access_denied_log", "incident", "event", "honeykey", "honeykey_event"):
                 c.execute(f"DELETE FROM {t}")
             c.execute("DELETE FROM sqlite_sequence")
@@ -518,7 +519,8 @@ async def _reset(provider: str):
                 c.execute("INSERT INTO honeykey(value_hash,masked,planted_at,created_at) VALUES(?,?,?,?)",
                           (hash_token(hk), mask_key(hk), planted, now))
                 state["honeykeys"][planted] = hk
-    return {"tokens": tokens, "honeykeys": state["honeykeys"]} | ({"leaked_key": keys[0][1]} if real else {})
+    return {"tokens": tokens, "honeykeys": state["honeykeys"],
+            "note": "trusted_identity(WIF 신뢰 규칙)도 삭제됨. WIF는 POST /demo/wif/seed 재실행"} | ({"leaked_key": keys[0][1]} if real else {})
 
 
 @router.post("/demo/honeypot/hit")
@@ -530,6 +532,6 @@ async def honeypot_hit(request: Request):
     ip = "203.0.113.77"
     async with httpx.AsyncClient(timeout=10) as http:
         r = await http.post(f"{str(request.base_url).rstrip('/')}/v1/chat/completions",
-                            headers={"Authorization": f"Bearer {hk}", "X-Demo-Source-IP": ip},
+                            headers={"Authorization": f"Bearer {hk}", "X-Demo-Source-IP": ip, "X-Admin-Key": ADMIN_KEY},
                             json={"model": "mock", "messages": [{"role": "user", "content": "hi"}]})
     return {"source_ip": ip, "planted_at": planted, "status_code": r.status_code, "response": r.json()}

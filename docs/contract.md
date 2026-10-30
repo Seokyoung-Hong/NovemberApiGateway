@@ -144,3 +144,14 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
   `POST /demo/wif/seed` → 규칙(issuer=로컬 IdP, `repo:november/*` → `직원A`) 1개, 멱등(재실행 시 service_id만 갱신). `직원A` 없으면 404 "먼저 /demo/reset".
   `POST /demo/wif/token` `{sub?}`(기본 `repo:november/app:ref:refs/heads/main`) → `{token, expires_in}`.
 - 한계: 실제 외부 IdP(Google/GitHub) 연동은 미검증(jwks_uri 조회만 구현), 키 교체 자동화 없음(새 kid는 캐시 5분 만료 후 반영), 로컬 IdP 키는 재시작 시 바뀜(기존 토큰 무효), `/demo/reset`은 `trusted_identity`를 지우지 않음(리셋 후 `/demo/wif/seed` 재실행 필요), JWKS 조회는 동기(최대 5초), `jti` 재사용 방지·토큰 폐기 목록 없음(짧은 TTL로 완화), IP 거부 로그의 `token_masked`는 기존 방식(JWT 앞 3자·뒤 4자).
+
+## K. 공개 모드
+인터넷 공개(NPM → 이 PC)용. 구현 `app/clientip.py`(관리자 키 검사·출발 IP·가드, 게이트웨이와 Mock 공용).
+- 환경변수: `PUBLIC_MODE=1`(기본 0 = 기존 동작), `ADMIN_KEY`(기본 `demo-admin`), `TRUSTED_PROXIES`(쉼표 구분 IP, 기본 빈 값). 키 비교는 `hmac.compare_digest`.
+- `PUBLIC_MODE=1`일 때 `X-Admin-Key` 필요: `/admin/*`(항상), `/demo/*`(게이트웨이·Mock 모두), `/idp/token`. 없거나 틀리면 401 `{"detail":"invalid_admin_key"}`.
+  공개 유지: `/v1/*`(토큰·IP·WIF), `/live*`, `/test`(페이지 자체), `/idp/.well-known/jwks.json`. `/docs`·`/redoc`·`/openapi.json`은 비활성(404, 시작 시 결정).
+  Mock의 `/v1/*`·`/usage`·`/revoke`·`/sts/token`은 인증이 없으므로 NPM은 Mock에 `/live*`만 넘길 것.
+- 출발 IP(`/v1` IP 검사·허니키 차단, Mock `/live/chat` 속도 제한 공통): 직접 접속 IP(`request.client.host`)가 `TRUSTED_PROXIES`에 있으면 `X-Forwarded-For`의 가장 오른쪽 신뢰되지 않은 값(모두 신뢰 프록시면 첫 값), 아니면 XFF 무시.
+  `X-Demo-Source-IP`는 `DEMO_MODE`이고 (공개 모드가 아니거나 유효한 `X-Admin-Key`가 있을 때)만 인정. `/demo/honeypot/hit`는 내부 호출에 관리자 키를 붙인다.
+- `/demo/reset`은 `trusted_identity`도 지운다(J절 한계 갱신). WIF를 쓰려면 리셋 후 `POST /demo/wif/seed` 재실행. 응답에 `note` 필드로 안내.
+- 테스트 서버: `scripts/run_test_server.ps1`(origin/main → `C:\Users\tjrdu\novemberdeploy\src`, Gateway 8800·Mock 9800, Tailscale IP에만 바인드, `.env` 미복사, 키 `novemberdeploy\admin_key.txt`), 종료 `scripts/stop_test_server.ps1`.

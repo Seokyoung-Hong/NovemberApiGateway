@@ -10,10 +10,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
-from app.contract import (LEAKED_KEY, LIVE_KEY_PATH, MOCK_USAGE_LAG_S, OPENROUTER_BASE_URL, OPENROUTER_MODEL,
+from app.clientip import client_ip, public_guard
+from app.contract import (PUBLIC_MODE, LEAKED_KEY, LIVE_KEY_PATH, MOCK_USAGE_LAG_S, OPENROUTER_BASE_URL, OPENROUTER_MODEL,
                           WIF_TOKEN_TTL_S, cost_krw)  # contract import 시 .env 로드
 
-app = FastAPI()
+app = FastAPI(**({"docs_url": None, "redoc_url": None, "openapi_url": None} if PUBLIC_MODE else {}))
+app.middleware("http")(public_guard)  # 공개 모드면 Mock /demo/reset도 관리자 키 필요
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 reqs: dict[str, list[tuple[float, int]]] = {}  # owner -> [(시각, 토큰)]
@@ -190,7 +192,7 @@ async def _live_openrouter(key: str, msg: str):
 @app.post("/live/chat")
 async def live_chat(request: Request):
     global live_calls
-    ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip() or request.client.host
+    ip = client_ip(request)
     now = time.time()
     hits = live_hits.setdefault(ip, [])
     hits[:] = [t for t in hits if t > now - 600]  # 10분 창(참여자 집계 겸용)

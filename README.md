@@ -16,5 +16,10 @@ python -m venv .venv
 - 공급자 어댑터(mock·openrouter·openai, `app/providers.py`): `POST /demo/reset-openai`·`/demo/cleanup-openai`(`.env`에 `OPENAI_ADMIN_KEY`, 탐지 약 7분 지연). 명세 I절.
 - 관리자 API는 `X-Admin-Key: demo-admin` 헤더. 명세는 `docs/contract.md`.
 
+## 테스트 서버 실행 (공개 모드, 계약 K절)
+- `.\scripts\run_test_server.ps1` - origin/main을 `C:\Users\tjrdu\novemberdeploy\src`에 풀고 Gateway 8800·Mock 9800을 Tailscale IP로 숨김 실행(종료 `.\scripts\stop_test_server.ps1`).
+- 관리자 키는 `C:\Users\tjrdu\novemberdeploy\admin_key.txt`(`/admin/*`·`/demo/*`·`/idp/token`에 `X-Admin-Key`), 로그 `novemberdeploy\logs\`.
+- 외부 접속 `hack.sio2.kr`은 NPM 설정 후(신뢰 프록시 100.69.18.101).
+
 ## 문서
 `docs/erd.md` · `docs/demo-scenario.md` · `docs/feature-spec.md` · `docs/contract.md`

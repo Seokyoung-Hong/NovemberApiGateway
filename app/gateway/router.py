@@ -12,8 +12,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app import providers, vault
-from app.contract import (ADMIN_KEY, DEFAULT_LIMIT_CALLS, DEFAULT_LIMIT_KRW, DEMO_MODE, LIVE_KEY_PATH,
-                          PROVIDERS, USD_TO_KRW, hash_token, mask_key)
+from app.clientip import admin_ok, client_ip
+from app.contract import (DEFAULT_LIMIT_CALLS, DEFAULT_LIMIT_KRW, LIVE_KEY_PATH, PROVIDERS, USD_TO_KRW, hash_token,
+                          mask_key)
 from app.db import get_conn
 
 router = APIRouter()
@@ -110,9 +111,8 @@ def _bad_gateway(cred):
 
 
 @router.post("/v1/chat/completions")
-async def chat_completions(request: Request, authorization: str = Header(""),
-                           x_demo_source_ip: Optional[str] = Header(None)):
-    ip = x_demo_source_ip if (DEMO_MODE and x_demo_source_ip) else (request.client.host if request.client else "")
+async def chat_completions(request: Request, authorization: str = Header("")):
+    ip = client_ip(request)
     token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
 
     gen = reset_gen[0]
@@ -193,7 +193,7 @@ async def chat_completions(request: Request, authorization: str = Header(""),
 # ---------------- C. 관리자 CRUD ----------------
 
 def _admin(x_admin_key: str = Header("")):
-    if x_admin_key != ADMIN_KEY:
+    if not admin_ok(x_admin_key):
         raise HTTPException(401, "invalid_admin_key")
 
 

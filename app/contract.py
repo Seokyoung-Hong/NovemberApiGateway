@@ -17,7 +17,9 @@ MOCK_BASE_URL = os.getenv("MOCK_BASE_URL", "http://127.0.0.1:9000")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 PROVIDERS = {"mock": MOCK_BASE_URL, "openrouter": OPENROUTER_BASE_URL, "openai": OPENAI_BASE_URL}  # 공급자 이름 -> base_url
-ADMIN_KEY = "demo-admin"  # X-Admin-Key (/admin/*)
+ADMIN_KEY = os.getenv("ADMIN_KEY", "demo-admin")  # X-Admin-Key (/admin/*, 공개 모드면 /demo/*·/idp/token도)
+PUBLIC_MODE = os.getenv("PUBLIC_MODE", "0") == "1"  # 인터넷 공개용(K절)
+TRUSTED_PROXIES = {p.strip() for p in os.getenv("TRUSTED_PROXIES", "").split(",") if p.strip()}  # XFF를 믿을 직접 접속 IP
 DB_PATH = os.getenv("DB_PATH", "data/gateway.db")
 DEMO_MODE = os.getenv("DEMO_MODE", "1") == "1"
 
