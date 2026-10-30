@@ -461,7 +461,7 @@ async def attack_stop():
 
 @router.post("/demo/reset")
 async def demo_reset():
-    return await _reset("mock")
+    return await _reset(os.getenv("DEMO_PROVIDER", "mock"))  # 서버에서 DEMO_PROVIDER=vllm이면 기본 초기화도 실제 공급자
 
 
 @router.post("/demo/reset-{provider}")
