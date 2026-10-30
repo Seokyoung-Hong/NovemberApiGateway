@@ -333,6 +333,18 @@ textarea.input { height: auto; min-height: 96px; padding: 10px 12px; resize: ver
 .inline-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .inline-form .input { height: 36px; font-size: 14px; flex: 1; min-width: 120px; }
 
+/* 판정 기준 행: 단계 이름 · 스테퍼 · 단위 · 설명 */
+.th-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--rule); flex-wrap: wrap; }
+.th-row:last-child { border-bottom: 0; }
+.th-l { width: 88px; flex: none; }
+.th-u { width: 16px; flex: none; color: var(--ink-3); font-size: 14px; }
+.th-d { flex: 1; min-width: 160px; font-size: 13px; color: var(--ink-2); }
+.th-row .stepper button { width: 36px; height: 36px; font-size: 18px; }
+.th-row .stepper input { width: 72px; height: 36px; font-size: 17px; }
+#thRows + .callout { margin-top: 16px; }
+.stepper button:disabled, .stepper input:disabled { opacity: .45; cursor: not-allowed; }
+.seg.full button:disabled { opacity: .45; cursor: not-allowed; }
+
 /* 스테퍼(한도) */
 .stepper { display: flex; align-items: center; gap: 6px; }
 .stepper button {
@@ -524,7 +536,7 @@ textarea.input { height: auto; min-height: 96px; padding: 10px 12px; resize: ver
   .hero h2 { font-size: 19px; }
   .big-metric .n { font-size: 36px; }
   .tabbar {
-    display: grid; grid-template-columns: repeat(5, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+    display: grid; grid-template-columns: repeat(6, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
     padding: 4px 4px calc(4px + env(safe-area-inset-bottom)); background: var(--surface); border-top: 1px solid var(--line);
   }
   .tabbar button {

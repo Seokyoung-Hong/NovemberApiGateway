@@ -223,9 +223,11 @@
   function tween(el, to, fmt = (v) => n(v), ms = 500) {
     const from = +(el.dataset.v || 0);
     el.dataset.v = to;
+    const id = (el._tween = (el._tween || 0) + 1); // 새 tween이 시작되면 이전 것은 멈춘다(단위가 바뀔 때 옛 형식으로 덮어쓰지 않게)
     if (from === to || matchMedia('(prefers-reduced-motion: reduce)').matches) { el.textContent = fmt(to); return; }
     const t0 = performance.now();
     const step = (t) => {
+      if (el._tween !== id) return;
       const k = Math.min(1, (t - t0) / ms), e = 1 - (1 - k) ** 3;
       el.textContent = fmt(from + (to - from) * e);
       if (k < 1) requestAnimationFrame(step);

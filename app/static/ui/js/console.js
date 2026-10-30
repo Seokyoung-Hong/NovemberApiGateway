@@ -8,7 +8,8 @@
   const PAGES = [
     { id: 'home', label: '홈', icon: 'home', sub: '게이트웨이 기록과 공급자 보고를 2초마다 대조해요' },
     { id: 'usage', label: '사용량', icon: 'chart', sub: '게이트웨이가 중계한 호출의 토큰과 비용' },
-    { id: 'keys', label: '키·한도', icon: 'key', sub: '판정 기준이 되는 한도와 공급자 크레덴셜' },
+    { id: 'limits', label: '한도', icon: 'target', sub: '어디서부터 의심하고 언제 키를 끊을지 정해요' },
+    { id: 'keys', label: '키', icon: 'key', sub: '공급자 키 발급과 전환 순서' },
     { id: 'access', label: '접근 제어', icon: 'shield', sub: '누가 어디에서 게이트웨이를 부를 수 있는지' },
     { id: 'incidents', label: '사고', icon: 'alert', sub: '자동 차단과 허니키 탐지가 남긴 기록' },
   ];
@@ -67,7 +68,7 @@
     v.innerHTML = '';
     v.className = 'page';
     void v.offsetWidth;
-    ({ home: viewHome, usage: viewUsage, keys: viewKeys, access: viewAccess, incidents: viewIncidents })[page.id](v);
+    ({ home: viewHome, usage: viewUsage, limits: viewLimits, keys: viewKeys, access: viewAccess, incidents: viewIncidents })[page.id](v);
     scrollTo({ top: 0 });
   }
 
@@ -79,7 +80,7 @@
           <span class="status-pill"><span class="pulse"></span><span id="hPill">정상</span></span>
           <h2 id="hTitle">불러오는 중…</h2>
           <p class="lead" id="hLead">&nbsp;</p>
-          <div class="big-metric"><span class="n num" id="hNum">0</span><span class="u">건</span><span class="of" id="hOf"></span></div>
+          <div class="big-metric"><span class="n num" id="hNum">0</span><span class="u" id="hUnit">건</span><span class="of" id="hOf"></span></div>
           <div class="metric-label" id="hLabel">설명되지 않는 호출</div>
           <div class="meter" id="meter"><div class="meter-fill"></div></div>
           <div class="meter-legend" id="meterLegend"></div>
@@ -90,7 +91,7 @@
             <div class="kpi"><div class="kpi-l"><i class="swatch gw"></i>게이트웨이 기록</div><div class="kpi-v num" id="kGw">0</div><div class="kpi-s">게이트웨이가 중계한 호출</div></div>
             <div class="kpi"><div class="kpi-l"><i class="swatch pv"></i>공급자 보고</div><div class="kpi-v num" id="kPv">0</div><div class="kpi-s" id="kPvS">공급자가 집계한 호출</div></div>
             <div class="kpi"><div class="kpi-l">${icon('key', 'width="14" height="14"')}사용 중인 키</div><div class="kpi-v sm mono" id="kKey">—</div><div class="kpi-s" id="kKeyS">&nbsp;</div></div>
-            <div class="kpi"><div class="kpi-l">${icon('target', 'width="14" height="14"')}자동 차단선</div><div class="kpi-v num" id="kBlock">—</div><div class="kpi-s" id="kLimit">&nbsp;</div></div>
+            <div class="kpi"><div class="kpi-l">${icon('target', 'width="14" height="14"')}자동 차단선</div><div class="kpi-v num" id="kBlock">—</div><div class="kpi-s"><a href="#limits" id="kLimit">&nbsp;</a></div></div>
           </div>
           <div class="callout" id="attackNote" hidden>${icon('bolt')}<span>공격자가 유출 키로 공급자를 직접 호출하고 있어요 (게이트웨이 우회)</span></div>
         </div>
@@ -119,7 +120,7 @@
           </div>
           <div class="card tight" id="howCard">
             <div class="card-h" style="margin-bottom:10px"><h3>어떻게 찾아내나요?</h3></div>
-            <p class="sub" style="margin:0;font-size:14px">직원은 모두 게이트웨이를 거쳐 호출해요. 그래서 <b>공급자가 보고한 호출 수가 게이트웨이 기록보다 많으면</b>, 누군가 키를 몰래 쓰고 있다는 뜻이에요. 차이가 한도의 70%에 닿으면 키를 폐기하고 예비 키로 바꿔요.</p>
+            <p class="sub" style="margin:0;font-size:14px">직원은 모두 게이트웨이를 거쳐 호출해요. 그래서 <b>공급자가 보고한 호출 수가 게이트웨이 기록보다 많으면</b>, 누군가 키를 몰래 쓰고 있다는 뜻이에요. <span id="howRule">차이가 차단선에 닿으면</span> 키를 폐기하고 예비 키로 바꿔요.</p>
           </div>
         </div>
       </section>`;
@@ -137,6 +138,18 @@
   const ratiosOf = (d) => { const w = d.warn_at_calls / d.limit_calls; return w > 0.4 ? [0.1, 0.5, 0.7] : [0.05, 0.2, 0.35]; };
   const activeDiff = (d) => d.credentials.filter((c) => c.status === 'ACTIVE').reduce((a, c) => a + Math.max(c.diff_calls, c.certain_diff_calls || 0), 0);
 
+  // 판정 기준을 한 모양으로. 사용량 방식(%) 또는 건수 방식(건).
+  // 아직 detection을 주지 않는 실서버는 '한도 L × 비율' 하나뿐이라 그걸 건수 방식으로 옮겨 그린다(legacy).
+  function detOf(d) {
+    if (d.detection) return d.detection;
+    const [s, w, b] = ratiosOf(d), L = d.limit_calls;
+    return { mode: 'calls', unit: '건', suspect: L * s, warn: L * w, block: L * b, value: activeDiff(d), diff_calls: activeDiff(d), legacy: true, limit: L };
+  }
+  const fmtDet = (x, v) => (x.unit === '%' ? `${n(v, 1)}%` : `${n(v, 1)}건`);
+  // 막대 끝: 차단선이 70% 자리에 오도록 잡고 둥근 값으로. 예전 서버는 한도 L이 끝
+  const meterMax = (x) => (x.legacy ? x.limit : x.unit === '%' ? Math.min(100, Math.ceil(x.block / 0.7 / 5) * 5) : Math.ceil(x.block / 0.7));
+  const ruleText = (x) => (x.unit === '%' ? `공급자 보고 호출의 ${n(x.block, 1)}%` : x.legacy ? `한도 ${n(x.limit)}건의 ${Math.round((x.block / x.limit) * 100)}%` : `설명되지 않는 호출 ${n(x.block)}건`);
+
   function renderHome(d) {
     const hero = $('#hero');
     if (!hero) return;
@@ -145,21 +158,33 @@
     $('#hPill').textContent = s.pill;
     $('#hTitle').textContent = s.title;
     $('#hLead').textContent = s.lead;
+    const x = detOf(d);
+    const pct = x.unit === '%';
     const blocked = d.status === 'BLOCKED' || d.status === 'RECOVERED';
     const inc = st.incident && st.incident.id === d.incident_id ? st.incident : null;
-    const val = blocked && inc ? (inc.loss_calls ?? 0) : activeDiff(d);
-    tween($('#hNum'), val);
-    const over = val > d.limit_calls; // 최종 손실은 한도를 넘을 수 있다(공격자가 빠르거나 공급자 지연이 클 때)
-    $('#hOf').innerHTML = `/ 한도 ${n(d.limit_calls)}건${over ? ` <span class="badge bad">${n(val - d.limit_calls)}건 초과</span>` : ''}`;
-    $('#hLabel').innerHTML = blocked ? `${icon('ban', 'width="16" height="16"')}차단까지 새어 나간 호출` : `${icon('alert', 'width="16" height="16"')}게이트웨이가 모르는 호출`;
-    const [sr, wr, br] = ratiosOf(d);
+    // 차단 뒤에는 방식과 상관없이 '새어 나간 호출 수'를 보여 준다
+    const showCalls = blocked || !pct;
+    const val = blocked && inc ? (inc.loss_calls ?? 0) : showCalls ? x.diff_calls : x.value;
+    tween($('#hNum'), val, (v) => n(v, showCalls ? 0 : 1));
+    $('#hUnit').textContent = showCalls ? '건' : '%';
+    const over = x.legacy && val > x.limit; // 예전 서버: 최종 손실이 한도를 넘을 수 있다(공격자가 빠르거나 공급자 지연이 클 때)
+    $('#hOf').innerHTML = blocked
+      ? `차단선 ${esc(fmtDet(x, x.block))}${over ? ` <span class="badge bad">한도를 ${n(val - x.limit)}건 초과</span>` : ''}`
+      : pct ? `모르는 호출 ${n(x.diff_calls)}건 / 공급자 보고 ${n(x.provider_calls)}건` : `/ 차단선 ${n(x.block, 1)}건`;
+    $('#hLabel').innerHTML = blocked ? `${icon('ban', 'width="16" height="16"')}차단까지 새어 나간 호출`
+      : `${icon('alert', 'width="16" height="16"')}${pct ? '공급자 보고 중 게이트웨이가 모르는 호출의 비율' : '게이트웨이가 모르는 호출'}`;
+    const max = meterMax(x);
+    const meterVal = blocked ? (pct ? x.block : val) : x.value;
+    const at = (v) => Math.min(100, (v / max) * 100);
     const meter = $('#meter');
     meter.dataset.level = d.status;
-    meter.classList.toggle('over', over);
-    $('.meter-fill', meter).style.width = `${Math.min(100, (val / d.limit_calls) * 100)}%`;
-    $$('.meter-tick', meter).forEach((x) => x.remove());
-    [[sr, ''], [wr, ''], [br, 'block']].forEach(([r, c]) => meter.insertAdjacentHTML('beforeend', `<span class="meter-tick ${c}" style="left:${r * 100}%"></span>`));
-    $('#meterLegend').innerHTML = `<span style="left:${sr * 100}%">의심 ${n(d.limit_calls * sr)}</span><span style="left:${wr * 100}%">경고 ${n(d.limit_calls * wr)}</span><span style="left:${br * 100}%;color:var(--bad-ink)">차단 ${n(d.block_at_calls)}</span><span class="end" style="left:100%">${n(d.limit_calls)}</span>`;
+    meter.classList.toggle('over', meterVal > max);
+    $('.meter-fill', meter).style.width = `${at(meterVal)}%`;
+    $$('.meter-tick', meter).forEach((t) => t.remove());
+    [[x.suspect, ''], [x.warn, ''], [x.block, 'block']].forEach(([v, c]) => meter.insertAdjacentHTML('beforeend', `<span class="meter-tick ${c}" style="left:${at(v)}%"></span>`));
+    const lv = (v) => (pct ? `${n(v, 1)}%` : n(v, 1));
+    $('#meterLegend').innerHTML = `<span style="left:${at(x.suspect)}%">의심 ${lv(x.suspect)}</span><span style="left:${at(x.warn)}%">경고 ${lv(x.warn)}</span><span style="left:${at(x.block)}%;color:var(--bad-ink)">차단 ${lv(x.block)}</span><span class="end" style="left:100%">${lv(max)}</span>`;
+    $('#howRule').textContent = pct ? `모르는 호출이 공급자 보고의 ${n(x.block, 1)}%에 닿으면` : `모르는 호출이 ${n(x.block, 1)}건에 닿으면`;
 
     tween($('#kGw'), d.gateway_calls);
     tween($('#kPv'), d.provider_calls);
@@ -168,8 +193,8 @@
     const a = d.active_credential;
     $('#kKey').textContent = a ? a.masked : '없음';
     $('#kKeyS').textContent = a ? `${a.provider} · ${a.auth_mode === 'WIF' ? 'WIF 단기 토큰' : 'API 키'}` : '예비 키가 없어요';
-    $('#kBlock').textContent = `${n(d.block_at_calls, 1)}건`;
-    $('#kLimit').textContent = `한도 ${n(d.limit_calls)}건의 ${Math.round(br * 100)}%`;
+    $('#kBlock').textContent = fmtDet(x, x.block);
+    $('#kLimit').textContent = x.unit === '%' ? '사용량 방식 · 바꾸기' : x.legacy ? ruleText(x) : '건수 방식 · 바꾸기';
     $('#updated').textContent = `${time(d.updated_at)} 기준`;
     $('#attackNote').hidden = !d.attack_running;
 
@@ -178,6 +203,9 @@
     $('#credList').innerHTML = creds.map((c) => credRow(c)).join('') || `<div class="empty">${icon('key')}등록된 키가 없어요</div>`;
   }
 
+  const PROVIDERS = { mock: 'Mock', openrouter: 'OpenRouter', openai: 'OpenAI', vllm: 'vLLM' };
+  const provName = (p) => PROVIDERS[p] || p;
+
   function credRow(c, actions = '') {
     const dead = c.status === 'REVOKED';
     const ic = dead ? 'gray' : c.role === 'PRIMARY' ? '' : 'ok';
@@ -185,8 +213,8 @@
     const mode = c.auth_mode === 'WIF' ? 'WIF 단기 토큰' : 'API 키 · Vault 암호화';
     const counts = c.gateway_calls != null ? ` · 게이트웨이 ${n(c.gateway_calls)} / 공급자 ${n(c.provider_calls)}${c.calls_estimated ? '(추정)' : ''}` : '';
     return `<div class="row ${dead ? 'dead' : ''}"><div class="row-ic ${ic}">${icon(c.auth_mode === 'WIF' ? 'id' : 'key')}</div>
-      <div class="row-b"><div class="row-t"><span class="mono">${esc(c.masked)}</span>${c.role === 'PRIMARY' && !dead ? '' : ''}</div>
-      <div class="row-s">${c.role === 'PRIMARY' ? '주 키' : '예비 키'} · ${esc(c.provider)} · ${mode}${counts}</div></div>
+      <div class="row-b"><div class="row-t"><span class="mono">${esc(c.masked)}</span>${c.name ? `<span class="muted" style="font-size:13px;font-weight:400">${esc(c.name)}</span>` : ''}</div>
+      <div class="row-s">${c.role === 'PRIMARY' ? '주 키' : '예비 키'} · ${esc(provName(c.provider))} · ${mode}${counts}</div></div>
       <div class="row-e">${badge}${actions}</div></div>`;
   }
 
@@ -333,52 +361,159 @@
     });
   }
 
-  // ================= 키·한도 =================
+  // ================= 한도 =================
+  // 판정 방식 두 가지(사용량 % / 건수). 오른쪽 표는 지금 고르고 있는 기준으로 키마다 다시 재서 보여 준다
+  const MODE_INFO = {
+    usage_pct: {
+      unit: '%', step: 1, max: 100,
+      help: '공급자가 보고한 호출 중 게이트웨이가 모르는 호출의 비율로 판정해요. 많이 쓰는 키도 적게 쓰는 키도 같은 잣대로 재요.',
+      why: '기본값 5 · 10 · 20%: 정상 호출은 게이트웨이와 공급자 기록이 같아 0%에 머물러요. 진행 중 요청 3건은 이미 빼고 재기 때문에 5%면 알림만 보내고, 20%면 공급자 집계 지연(약 2초) 동안 더 새는 호출을 감안해도 피해가 작을 때 끊어요. 쓰임이 없던 키가 몰래 쓰이면 바로 100%가 돼 즉시 막혀요.',
+      rows: [['의심', 'warn', 'alert', '부터 알림을 보내요'], ['경고', 'warn', 'bell', '부터 경고로 올려요'], ['자동 차단', 'bad', 'ban', '에 닿으면 키를 폐기하고 예비 키로 바꿔요']],
+    },
+    calls: {
+      unit: '건', step: 1, max: 100000,
+      help: '게이트웨이가 모르는 호출을 1건 단위로 세어 판정해요. 사용량과 상관없이 몇 건이 새었는지만 봐요.',
+      why: '기본값 1 · 5 · 10건: 진행 중 요청 3건은 이미 빼고 센 값이라 1건부터 실제 무단 호출이에요. 의심은 알림만 보내니 1건, 차단은 공급자 집계 지연(약 2초) 동안 초당 5건씩 더 새는 걸 감안해 10건으로 뒀어요. OpenRouter처럼 호출 수를 비용으로 추정하는 공급자는 오차가 있어 사용량 방식이 더 안정적이에요.',
+      rows: [['의심', 'warn', 'alert', '부터 알림을 보내요'], ['경고', 'warn', 'bell', '부터 경고로 올려요'], ['자동 차단', 'bad', 'ban', '에 닿으면 키를 폐기하고 예비 키로 바꿔요']],
+    },
+  };
+  const KEYS_OF = { usage_pct: ['suspect_pct', 'warn_pct', 'block_pct'], calls: ['suspect_calls', 'warn_calls', 'block_calls'] };
+
+  function viewLimits(v) {
+    v.innerHTML = `
+      <section class="grid g-main">
+        <div class="card">
+          <div class="card-h"><div><h2>판정 기준</h2><p>게이트웨이가 모르는 호출을 무엇으로 잴지 골라요</p></div></div>
+          <div class="seg full" id="dMode"><button data-m="usage_pct" aria-pressed="true">사용량 방식 (%)</button><button data-m="calls" aria-pressed="false">건수 방식 (건)</button></div>
+          <p class="sub" id="dHelp" style="font-size:14px;margin:12px 0 8px"></p>
+          <div id="thRows"></div>
+          <div class="callout info" id="dWhy"></div>
+          <label class="field" style="margin-top:16px"><span>참고 금액 한도 (원, 판정에 쓰지 않아요)</span><input class="input num" id="lossIn" inputmode="numeric"></label>
+          <button class="btn block" id="limSave">저장하기</button>
+        </div>
+        <div class="card">
+          <div class="card-h"><div><h2>키별 지금 값</h2><p>왼쪽 기준으로 재면 키마다 지금 어디쯤인지 보여 줘요</p></div></div>
+          <div class="table-wrap"><table class="table"><thead><tr><th>키</th><th class="r">공급자 보고</th><th class="r">모르는 호출</th><th class="r">판정값</th><th></th></tr></thead><tbody id="thLive"></tbody></table></div>
+        </div>
+      </section>`;
+    let cfg = null, legacy = false;
+    const form = () => {
+      if (legacy) return { mode: 'calls', th: (() => { const L = +$('#th0').value || 0, r = st.dash ? ratiosOf(st.dash) : [0.1, 0.5, 0.7]; return r.map((x) => L * x); })() };
+      return { mode: cfg.detection_mode, th: [0, 1, 2].map((i) => +$(`#th${i}`).value || 0) };
+    };
+    const renderRows = () => {
+      const m = MODE_INFO[cfg.detection_mode];
+      $$('#dMode button').forEach((b) => { b.setAttribute('aria-pressed', b.dataset.m === cfg.detection_mode); b.disabled = legacy && b.dataset.m === 'usage_pct'; });
+      if (legacy) {
+        $('#dHelp').textContent = '연결된 서버는 아직 사용량 방식을 몰라요. 허용 무단 호출 수(한도) 하나에 의심·경고·차단 비율을 곱해 판정해요.';
+        $('#thRows').innerHTML = `<div class="th-row"><span class="th-l">한도</span><div class="stepper"><button data-step="-1" data-i="0" aria-label="한도 줄이기">−</button><input id="th0" class="num" inputmode="numeric" value="${cfg.unauthorized_call_limit}" aria-label="한도 (건)"><button data-step="1" data-i="0" aria-label="한도 늘리기">+</button></div><span class="th-u">건</span><span class="th-d" id="legacyTh"></span></div>`;
+        $('#dWhy').innerHTML = `${icon('bell')}<span>차단선을 한도의 70%에 두는 이유: 공급자 집계 지연(2초)과 폴링(2초) 동안 들어오는 호출을 흡수해서 최종 손실이 한도 아래에 머물게 하려는 거예요.</span>`;
+        return;
+      }
+      const vals = KEYS_OF[cfg.detection_mode].map((k) => cfg[k]);
+      $('#dHelp').textContent = m.help;
+      $('#thRows').innerHTML = m.rows.map(([l, k, ic, tail], i) => `<div class="th-row"><span class="th-l"><span class="badge ${k}">${icon(ic)}${l}</span></span>
+        <div class="stepper"><button data-step="-1" data-i="${i}" aria-label="${l} 줄이기">−</button><input id="th${i}" class="num" inputmode="decimal" value="${vals[i]}" aria-label="${l} (${m.unit})"><button data-step="1" data-i="${i}" aria-label="${l} 늘리기">+</button></div>
+        <span class="th-u">${m.unit}</span><span class="th-d">${tail}</span></div>`).join('');
+      $('#dWhy').innerHTML = `${icon('bell')}<span>${m.why}</span>`;
+    };
+    // 기준이 바뀔 때마다 키별 값과 판정을 다시 계산(저장 전 미리 보기)
+    const renderLive = () => {
+      const f = form(), pct = f.mode === 'usage_pct';
+      if (legacy && $('#legacyTh')) $('#legacyTh').textContent = `의심 ${n(f.th[0], 1)} · 경고 ${n(f.th[1], 1)} · 차단 ${n(f.th[2], 1)}건`;
+      const rows = st.dash ? st.dash.credentials.filter((c) => c.status === 'ACTIVE') : [];
+      const lvl = (x) => (x >= f.th[2] ? ['bad', '차단'] : x >= f.th[1] ? ['warn', '경고'] : x > 0 && x >= f.th[0] ? ['warn', '의심'] : ['', '정상']);
+      $('#thLive').innerHTML = rows.map((c) => {
+        const diff = Math.max(c.diff_calls, c.certain_diff_calls || 0), x = pct ? (c.provider_calls > 0 ? (diff / c.provider_calls) * 100 : 0) : diff;
+        const [k, l] = lvl(x);
+        return `<tr><td><span class="mono">${esc(c.masked)}</span><div class="muted" style="font-size:12px">${c.role === 'PRIMARY' ? '주 키' : '예비 키'} · ${esc(provName(c.provider))}</div></td>
+          <td class="r num">${n(c.provider_calls)}</td><td class="r num">${n(diff)}</td><td class="r num"><b>${pct ? `${n(x, 1)}%` : `${n(x)}건`}</b></td><td class="r"><span class="badge ${k}">${l}</span></td></tr>`;
+      }).join('') || `<tr><td colspan="5"><div class="empty">${icon('key')}사용 중인 키가 없어요</div></td></tr>`;
+    };
+    st.onDash = () => { if (cfg) renderLive(); };
+    $('#dMode').onclick = (e) => {
+      const b = e.target.closest('[data-m]'); if (!b || b.disabled || !cfg) return;
+      KEYS_OF[cfg.detection_mode].forEach((k, i) => { cfg[k] = +$(`#th${i}`).value || cfg[k]; });
+      cfg.detection_mode = b.dataset.m;
+      renderRows(); renderLive();
+    };
+    $('#thRows').oninput = renderLive;
+    $('#thRows').onclick = (e) => {
+      const b = e.target.closest('[data-step]'); if (!b) return;
+      const inp = $(`#th${b.dataset.i}`), max = legacy ? 100000 : MODE_INFO[cfg.detection_mode].max;
+      inp.value = Math.min(max, Math.max(1, (+inp.value || 0) + +b.dataset.step));
+      renderLive();
+    };
+    API.settings().then((s) => {
+      legacy = !s.detection_mode;
+      cfg = { ...s, detection_mode: s.detection_mode || 'calls' };
+      $('#lossIn').value = s.loss_limit_krw;
+      renderRows(); renderLive();
+    }).catch((e) => toast(e.message, 'bad'));
+    $('#limSave').onclick = async () => {
+      const K = parseInt($('#lossIn').value.replace(/\D/g, ''), 10);
+      const f = form();
+      try {
+        if (legacy) {
+          const L = parseInt($('#th0').value, 10);
+          await API.saveSettings({ unauthorized_call_limit: L, loss_limit_krw: K });
+          return toast(`한도를 ${n(L)}건으로 바꿨어요. 다음 판정(2초 안)부터 적용돼요`, 'ok');
+        }
+        if (!(f.th[0] < f.th[1] && f.th[1] < f.th[2])) return toast('의심 < 경고 < 자동 차단 순서로 정해 주세요', 'warn');
+        const body = { detection_mode: f.mode, loss_limit_krw: K };
+        KEYS_OF[f.mode].forEach((k, i) => { body[k] = f.mode === 'calls' ? Math.round(f.th[i]) : f.th[i]; });
+        cfg = { ...cfg, ...(await API.saveSettings(body)) };
+        toast(`${f.mode === 'calls' ? '건수' : '사용량'} 방식, 자동 차단 ${f.mode === 'calls' ? `${n(f.th[2])}건` : `${n(f.th[2], 1)}%`}으로 바꿨어요. 다음 판정(2초 안)부터 적용돼요`, 'ok');
+      } catch (e) { toast(e.message, 'bad'); }
+    };
+  }
+
+  // ================= 키 =================
+  const PROV_INFO = {
+    openrouter: { lag: '사용액 약 6초 지연 · 폐기 약 20초', limit: true },
+    openai: { lag: '호출 수 약 6분 지연 · 폐기 약 3초', limit: false },
+  };
+
   function viewKeys(v) {
     v.innerHTML = `
       <section class="grid g-main">
         <div class="card">
-          <div class="card-h"><div><h2>허용 무단 호출 수</h2><p>게이트웨이가 모르는 호출을 몇 건까지 참을지 정해요. 판정의 기준이에요.</p></div></div>
-          <div style="display:flex;gap:18px;align-items:center;flex-wrap:wrap">
-            <div class="stepper"><button id="limDown" aria-label="줄이기">−</button><input id="limIn" class="num" inputmode="numeric" aria-label="허용 무단 호출 수"><button id="limUp" aria-label="늘리기">+</button></div>
-            <div class="inline-form">${[30, 50, 100, 200].map((x) => `<button class="chip" data-lim="${x}">${x}건</button>`).join('')}</div>
-          </div>
-          <div class="kpis k3" style="margin-top:20px" id="limPreview"></div>
-          <div class="callout info" style="margin-top:var(--gap)">${icon('bell')}<span>차단선을 한도의 70%에 두는 이유: 공급자 집계 지연(2초)과 폴링(2초) 동안 들어오는 호출을 흡수해서 최종 손실이 한도 아래에 머물게 하려는 거예요.</span></div>
-          <label class="field" style="margin-top:8px"><span>참고 금액 한도 (원, 판정에 쓰지 않아요)</span><input class="input num" id="lossIn" inputmode="numeric"></label>
-          <button class="btn block" id="limSave">저장하기</button>
+          <div class="card-h"><div><h2>공급자 키</h2><p id="credSum">원문은 Vault에 암호화해 저장하고 화면에는 마스킹만 보여요</p></div><div class="spacer"></div><button class="btn sm soft" id="addCred">${icon('plus')}직접 등록</button></div>
+          <div class="list" id="credAll"></div>
         </div>
         <div class="card">
-          <div class="card-h"><div><h2>실제 공급자 키 만들기</h2><p>OpenRouter · OpenAI 관리 키로 november- 접두 키를 만들어요</p></div></div>
-          <div id="provBox"></div>
+          <div class="card-h"><div><h2>공급자 키 발급</h2><p>공급자 관리 API로 새 키를 만들어 바로 등록해요. 같은 공급자 키를 여러 개 둘 수 있어요</p></div></div>
+          <div class="field"><span>공급자</span><div class="seg full" id="pProv">${Object.keys(PROV_INFO).map((p, i) => `<button data-p="${p}" aria-pressed="${i === 0}">${provName(p)}</button>`).join('')}</div><small id="pLag"></small></div>
+          <div class="field"><span>역할</span><div class="seg full" id="pRole"><button data-r="STANDBY" aria-pressed="true">예비 키</button><button data-r="PRIMARY" aria-pressed="false">주 키</button></div></div>
+          <div class="field"><span>개수</span>
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><div class="stepper"><button id="pDown" aria-label="개수 줄이기">−</button><input id="pCount" class="num" inputmode="numeric" value="2" aria-label="발급할 키 개수"><button id="pUp" aria-label="개수 늘리기">+</button></div><small id="pCountNote">한 번에 10개까지</small></div></div>
+          <label class="field"><span>누구의 키인가요 (선택)</span><input class="input" id="pName" placeholder="예: 직원A, 마케팅팀" maxlength="40"><small id="pNameNote">공급자에는 november-이름-번호로 붙어요</small></label>
+          <label class="field" id="pLimitF"><span>키마다 지출 한도 (USD)</span><input class="input num" id="pLimit" inputmode="decimal" value="0.5"><small>탐지가 늦어지는 동안의 최대 손실을 공급자 쪽에서 한 번 더 막아요</small></label>
+          <button class="btn block" id="pGo"></button>
+          <p class="muted" style="font-size:12px;margin:10px 0 0">${API.mode === 'live' ? '게이트웨이 .env에 OPENROUTER_MANAGEMENT_KEY 또는 OPENAI_ADMIN_KEY가 있어야 해요.' : '시뮬레이션에서는 공급자에 연결하지 않고 같은 모양의 키를 만들어요.'}</p>
         </div>
-      </section>
-      <div class="card" style="margin-top:var(--gap)">
-        <div class="card-h"><div><h2>공급자 크레덴셜</h2><p>원문은 Vault에 암호화해 저장하고 화면에는 마스킹만 보여요</p></div><div class="spacer"></div><button class="btn sm" id="addCred">${icon('plus')}키 등록</button></div>
-        <div class="list" id="credAll"></div>
-      </div>`;
-    let ratios = [0.1, 0.5, 0.7];
-    const preview = () => {
-      const L = +$('#limIn').value || 0;
-      $('#limPreview').innerHTML = [['의심', ratios[0], 'warn', 'alert'], ['경고', ratios[1], 'warn', 'bell'], ['자동 차단', ratios[2], 'bad', 'ban']]
-        .map(([l, r, k, ic]) => `<div class="kpi"><div class="kpi-l"><span class="badge ${k}">${icon(ic)}${l}</span></div><div class="kpi-v num">${n(L * r, 1)}건</div><div class="kpi-s">한도의 ${Math.round(r * 100)}%</div></div>`).join('');
+      </section>`;
+    const f = { prov: 'openrouter', role: 'STANDBY' };
+    const count = () => (f.role === 'PRIMARY' ? 1 : Math.min(10, Math.max(1, parseInt($('#pCount').value, 10) || 1)));
+    const sync = () => {
+      $$('#pProv button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.p === f.prov));
+      $$('#pRole button').forEach((b) => b.setAttribute('aria-pressed', b.dataset.r === f.role));
+      $('#pLag').textContent = PROV_INFO[f.prov].lag;
+      $('#pLimitF').hidden = !PROV_INFO[f.prov].limit;
+      const primary = f.role === 'PRIMARY';
+      $('#pCount').disabled = primary; $('#pDown').disabled = primary; $('#pUp').disabled = primary;
+      $('#pCountNote').textContent = primary ? '주 키는 한 번에 하나예요' : '한 번에 10개까지';
+      const k = count();
+      $('#pGo').textContent = `${provName(f.prov)} ${primary ? '주 키' : '예비 키'} ${k}개 발급`;
     };
-    API.settings().then((s) => { $('#limIn').value = s.unauthorized_call_limit; $('#lossIn').value = s.loss_limit_krw; if (st.dash) ratios = ratiosOf(st.dash); preview(); });
-    $('#limIn').oninput = preview;
-    $('#limDown').onclick = () => { $('#limIn').value = Math.max(1, (+$('#limIn').value || 0) - 10); preview(); };
-    $('#limUp').onclick = () => { $('#limIn').value = (+$('#limIn').value || 0) + 10; preview(); };
-    $$('[data-lim]').forEach((b) => { b.onclick = () => { $('#limIn').value = b.dataset.lim; preview(); }; });
-    $('#limSave').onclick = async () => {
-      const L = parseInt($('#limIn').value, 10), K = parseInt($('#lossIn').value.replace(/\D/g, ''), 10);
-      try { await API.saveSettings({ unauthorized_call_limit: L, loss_limit_krw: K }); toast(`한도를 ${n(L)}건으로 바꿨어요. 다음 판정(2초 안)부터 적용돼요`, 'ok'); }
-      catch (e) { toast(e.message, 'bad'); }
-    };
+    $('#pProv').onclick = (e) => { const b = e.target.closest('[data-p]'); if (b) { f.prov = b.dataset.p; sync(); } };
+    $('#pRole').onclick = (e) => { const b = e.target.closest('[data-r]'); if (b) { f.role = b.dataset.r; sync(); } };
+    $('#pCount').oninput = sync;
+    $('#pDown').onclick = () => { $('#pCount').value = Math.max(1, count() - 1); sync(); };
+    $('#pUp').onclick = () => { $('#pCount').value = Math.min(10, count() + 1); sync(); };
+    $('#pGo').onclick = () => issueKeys(f.prov, f.role, count(), $('#pName').value.trim(), parseFloat($('#pLimit').value) || 0.5, $('#pGo')).then(sync);
     $('#addCred').onclick = credSheet;
-    $('#provBox').innerHTML = `<div class="list">${['openrouter', 'openai'].map((p) => `<div class="row"><div class="row-ic">${icon('plug')}</div><div class="row-b"><div class="row-t"><span>${p === 'openrouter' ? 'OpenRouter' : 'OpenAI'}</span></div><div class="row-s">${p === 'openrouter' ? '사용액 약 6초 지연 · 폐기 약 20초' : '호출 수 약 6분 지연 · 폐기 약 3초'}</div></div><div class="row-e"><button class="btn sm soft" data-prov="${p}" data-role="STANDBY">예비</button><button class="btn sm" data-prov="${p}" data-role="PRIMARY">주 키</button></div></div>`).join('')}</div>
-      ${API.mode === 'live'
-        ? '<p class="muted" style="font-size:12px;margin:10px 0 0">게이트웨이 .env에 OPENROUTER_MANAGEMENT_KEY 또는 OPENAI_ADMIN_KEY가 있어야 해요.</p>'
-        : `<div class="callout" style="margin-bottom:0">${icon('plug')}<span>시뮬레이션에서는 실제 키를 만들지 않아요. 실서버에 연결하면 POST /admin/{provider}/provision을 불러요.</span></div>`}`;
-    $$('[data-prov]').forEach((b) => { b.onclick = () => provision(b.dataset.prov, b.dataset.role); });
+    sync();
     loadCreds();
   }
 
@@ -391,6 +526,9 @@
       host.innerHTML = list.map((c) => credRow({ ...c, ...(counts[c.id] ? { gateway_calls: counts[c.id].gateway_calls, provider_calls: counts[c.id].provider_calls, calls_estimated: counts[c.id].calls_estimated } : {}) },
         c.status === 'ACTIVE' ? `<button class="icon-btn" data-revoke="${c.id}" aria-label="폐기">${icon('trash')}</button>` : '')).join('')
         || `<div class="empty">${icon('key')}등록된 키가 없어요</div>`;
+      const act = list.filter((c) => c.status === 'ACTIVE'), by = {};
+      act.forEach((c) => { by[c.provider] = (by[c.provider] || 0) + 1; });
+      if ($('#credSum')) $('#credSum').textContent = act.length ? `사용 가능 ${n(act.length)}개 · ${Object.entries(by).map(([p, k]) => `${provName(p)} ${n(k)}`).join(' · ')}` : '사용 가능한 키가 없어요';
       $$('[data-revoke]', host).forEach((b) => {
         b.onclick = async () => {
           if (!await confirmSheet({ title: '이 키를 폐기할까요?', desc: '게이트웨이에서 REVOKED로 표시만 해요. 공급자 쪽 폐기는 하지 않아요.', ok: '폐기', danger: true })) return;
@@ -420,14 +558,28 @@
     });
   }
 
-  async function provision(provider, role) {
+  // 같은 공급자 키 여러 개: 실서버 API가 한 번에 하나라 차례로 부른다. 이름은 공급자 쪽에서 november-이름-번호가 된다
+  async function issueKeys(provider, role, count, label, limitUsd, btn) {
+    const slug = label.replace(/\s+/g, '-');
+    const made = [];
+    let leaked = null, err = null;
+    btn.disabled = true;
     try {
-      toast(`${provider} 키를 만드는 중이에요…`, 'info');
-      const r = await API.provision(provider, { role, limit_usd: 0.5 });
-      loadCreds();
-      if (r.leaked_key) secretSheet('주 키를 만들었어요', '공격자 화면에서 ‘유출된 키’로 쓰여요. 지금 한 번만 보여 드려요.', r.leaked_key);
-      else toast(`${r.masked} 예비 키를 만들었어요`, 'ok');
-    } catch (e) { toast(e.message, 'bad'); }
+      for (let i = 1; i <= count; i++) {
+        btn.textContent = `${provName(provider)} 키 만드는 중… (${i}/${count})`;
+        const name = slug ? (count > 1 ? `${slug}-${i}` : slug) : undefined;
+        try {
+          const r = await API.provision(provider, { role, limit_usd: limitUsd, ...(name ? { name } : {}) });
+          made.push(r);
+          if (r.leaked_key) leaked = r.leaked_key;
+        } catch (e) { err = e; break; }
+      }
+    } finally { btn.disabled = false; }
+    loadCreds();
+    const what = `${provName(provider)} ${role === 'PRIMARY' ? '주 키' : '예비 키'}`;
+    if (err) toast(made.length ? `${what} ${made.length}개를 만들고 멈췄어요: ${err.message}` : err.message === 'active PRIMARY already exists' ? '이미 사용 중인 주 키가 있어요. 예비 키로 만들거나 주 키를 먼저 폐기하세요' : err.message, 'bad');
+    else if (leaked) secretSheet('주 키를 만들었어요', '공격자 화면에서 ‘유출된 키’로 쓰여요. 지금 한 번만 보여 드려요.', leaked);
+    else toast(`${what} ${made.length}개를 만들었어요`, 'ok');
   }
 
   function secretSheet(title, desc, value) {
@@ -597,7 +749,7 @@
         const done = i.status === 'RESOLVED';
         return `<div class="row click" data-inc="${i.id}"><div class="row-ic ${hk ? 'warn' : done ? 'ok' : 'bad'}">${icon(hk ? 'honey' : done ? 'check' : 'ban')}</div>
           <div class="row-b"><div class="row-t"><span>${hk ? '허니키 사용 탐지' : `${esc(i.credential_masked)} 유출 차단`}</span><span class="badge ${done ? 'ok' : hk ? 'warn' : 'bad'}">${{ OPEN: '진행 중', ROTATED: '전환됨', RESOLVED: '복구됨' }[i.status] || i.status}</span></div>
-          <div class="row-s">${time(i.detected_at)} · ${hk ? esc((i.timeline[0] || {}).detail || '') : `손실 ${n(i.loss_calls)}건 / 한도 ${n(i.limit_calls)}건${i.new_credential_masked ? ` · ${esc(i.new_credential_masked)}로 전환` : ''}`}</div></div>
+          <div class="row-s">${time(i.detected_at)} · ${hk ? esc((i.timeline[0] || {}).detail || '') : `손실 ${n(i.loss_calls)}건${i.limit_calls ? ` / 한도 ${n(i.limit_calls)}건` : i.block_label ? ` · 차단선 ${esc(i.block_label)}` : ''}${i.new_credential_masked ? ` · ${esc(i.new_credential_masked)}로 전환` : ''}`}</div></div>
           <div class="row-e">${icon('arrow', 'width="18" height="18" style="color:var(--ink-4)"')}</div></div>`;
       }).join('') || `<div class="empty" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><span style="flex:1;min-width:220px">아직 사고가 없어요. 자동 차단이나 허니키 탐지가 일어나면 시각, 새어 나간 호출 수, 전환한 키가 여기에 남아요.</span><button class="btn sm soft" onclick="document.getElementById('demoBtn').click()">${icon('play')}데모 제어 열기</button></div>`;
       $('#incCount').textContent = list.length ? `${n(list.length)}건` : '';
@@ -613,7 +765,7 @@
     const dur = i.resolved_at ? (new Date(i.resolved_at) - new Date(i.detected_at)) / 1000 : null;
     return `
       ${hk ? '' : `<div class="kpis" style="margin-bottom:22px">
-        <div class="kpi"><div class="kpi-l">새어 나간 호출${i.calls_estimated ? ' (추정)' : ''}</div><div class="kpi-v num">${i.calls_estimated ? '약 ' : ''}${n(i.loss_calls)}<span style="font-size:15px;color:var(--ink-3)"> / ${n(i.limit_calls)}건</span></div><div class="kpi-s">${i.loss_calls == null || !i.limit_calls ? '&nbsp;' : i.loss_calls <= i.limit_calls ? '한도 안에서 막았어요' : `<span style="color:var(--bad-ink)">한도를 ${n(i.loss_calls - i.limit_calls)}건 넘었어요</span>`}</div></div>
+        <div class="kpi"><div class="kpi-l">새어 나간 호출${i.calls_estimated ? ' (추정)' : ''}</div><div class="kpi-v num">${i.calls_estimated ? '약 ' : ''}${n(i.loss_calls)}<span style="font-size:15px;color:var(--ink-3)">${i.limit_calls ? ` / ${n(i.limit_calls)}` : ''}건</span></div><div class="kpi-s">${!i.limit_calls ? (i.block_label ? `차단선 ${esc(i.block_label)}에서 끊었어요` : '&nbsp;') : i.loss_calls == null ? '&nbsp;' : i.loss_calls <= i.limit_calls ? '한도 안에서 막았어요' : `<span style="color:var(--bad-ink)">한도를 ${n(i.loss_calls - i.limit_calls)}건 넘었어요</span>`}</div></div>
         <div class="kpi"><div class="kpi-l">탐지 → 복구</div><div class="kpi-v num">${dur != null ? `${n(dur, 1)}초` : '진행 중'}</div><div class="kpi-s">탐지 ${time(i.detected_at)}</div></div>
       </div>
       <div class="row" style="padding:0 0 18px;border:0"><div class="row-ic bad">${icon('key')}</div><div class="row-b"><div class="row-s">폐기한 키</div><div class="row-t"><span class="mono">${esc(i.credential_masked)}</span></div></div>
@@ -633,7 +785,7 @@
     let timer = null;
     const s = sheet({
       title: hk ? '허니키가 사용됐어요' : live ? '유출된 키를 자동으로 차단했어요' : `${esc(i.credential_masked)} 차단 기록`,
-      desc: hk ? '호출자에게는 평범한 401을 돌려주고, 안에서는 출발 IP를 10분간 막았어요.' : '게이트웨이가 모르는 호출이 차단선을 넘어 아래 순서로 대응했어요.',
+      desc: hk ? '호출자에게는 평범한 401을 돌려주고, 안에서는 전체 API 토큰을 폐기하고 서비스를 일시 정지했어요.' : '게이트웨이가 모르는 호출이 차단선을 넘어 아래 순서로 대응했어요.',
       body: `<div id="incBody">${incidentBody(i)}</div><div class="sheet-f"><button class="btn" data-close>확인</button></div>`,
       onMount(el) {
         // loss_calls 는 RESOLVED 뒤에도 한 번 더 바뀐다(Mock 폐기 2.5초 후, OpenRouter 28초 후 최종값) → 복구 후 40초까지 갱신
@@ -841,6 +993,7 @@
       }
       if (!prev || prev.status !== d.status) { renderNav(); renderBanner(d); }
       if (st.page === 'home') { renderHome(d); if (ev.events.length) renderFeed(); }
+      if (st.page === 'limits' && st.onDash) st.onDash();
       setConn(true);
     } catch (e) {
       setConn(false, e);
