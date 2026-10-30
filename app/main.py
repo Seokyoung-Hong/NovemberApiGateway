@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.db import init_db
 from app.detector.router import router as detector_router, worker_loop
 from app.gateway.router import router as gateway_router
+from app.testpage import router as test_router
 from app.usage import router as usage_router
 
 
@@ -24,3 +25,4 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 app.include_router(gateway_router)
 app.include_router(detector_router)
 app.include_router(usage_router)
+app.include_router(test_router)
