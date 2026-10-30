@@ -148,7 +148,6 @@
     function gatewayCall({ token = '', ip = '127.0.0.1', model = 'mock', message = '', max_tokens = 300 }) {
       const hk = S.honeykeys.find((h) => h.value === token);
       if (hk) { honeyHit(hk, ip); throw new HttpError(401, { error: 'invalid_token' }); }
-      if ((S.blockedIps[ip] || 0) > now()) deny(403, 'ip_blocked', ip, token);
       if (!S.cidrs.some((c) => ipIn(ip, c.cidr))) deny(403, 'ip_not_allowed', ip, token);
       let tok = S.tokens.find((x) => x.token === token);
       if (!tok && token.split('.').length === 3 && !token.startsWith('nvm-')) {
@@ -176,7 +175,9 @@
 
     function honeyHit(hk, ip) {
       const t = now();
-      S.blockedIps[ip] = t + 600;
+      const nTok = S.tokens.filter((x) => x.status === 'ACTIVE').length, nSvc = S.services.filter((x) => x.status === 'ACTIVE').length;
+      S.tokens.forEach((x) => { x.status = 'REVOKED'; });
+      S.services.forEach((x) => { x.status = 'SUSPENDED'; });
       const msg = `허니키 사용 탐지: ${hk.masked}(${hk.planted_at}) 출발 IP ${ip}`;
       const dup = S.hkEvents.some((e) => e.honeykey_id === hk.id && e.source_ip === ip && e.at > t - 60);
       S.hkEvents.push({ honeykey_id: hk.id, source_ip: ip, at: t });
@@ -186,7 +187,7 @@
         S.incidents.push({
           id: iid, trigger_type: 'HONEYKEY', status: 'OPEN', credential_id: null, detected_at: t, blocked_at: t, resolved_at: null,
           loss_calls: null, limit_calls: null, loss_krw: null, limit_krw: null, new_credential_id: null,
-          timeline: [{ at: iso(t), step: 'DETECTED', ok: true, detail: msg }, { at: iso(t), step: 'NOTIFY_ADMIN', ok: true, detail: `관리자 통보, ${ip} 600초 차단` }],
+          timeline: [{ at: iso(t), step: 'DETECTED', ok: true, detail: msg }, { at: iso(t), step: 'REVOKE_ALL_TOKENS', ok: true, detail: `전체 API 토큰 ${nTok}개 폐기` }, { at: iso(t), step: 'SUSPEND_SERVICES', ok: true, detail: `서비스 ${nSvc}개 일시 정지` }, { at: iso(t), step: 'NOTIFY_ADMIN', ok: true, detail: '관리자 통보. 토큰 재발급·서비스 재개는 관리자가 수동으로' }],
         });
       }
       event('HONEYKEY', msg, { honeykey_id: hk.id, planted_at: hk.planted_at, source_ip: ip, incident_id: iid });

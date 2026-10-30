@@ -59,25 +59,27 @@ def _ip_allowed(ip: str, cidrs) -> bool:
 
 
 _wif_cache: dict[str, tuple[str, float]] = {}  # audience -> (token, 만료 epoch)
-blocked_ips: dict[str, float] = {}  # 허니키 사용 IP -> 차단 해제 epoch. ponytail: 메모리 보관, 재시작 시 사라짐
+blocked_ips: dict[str, float] = {}  # 더 이상 채우지 않음(허니키는 IP 차단 대신 전체 토큰 폐기). 대시보드 호환용 빈 dict
 reset_gen = [0]  # /demo/reset마다 증가. 리셋 전에 시작한 중계는 usage_log를 쓰지 않는다(id 재사용 충돌 방지)
-HONEY_BLOCK_S, HONEY_DEDUP_S = 600, 60
+HONEY_DEDUP_S = 60
 
 
 def _honeykey_hit(hk, ip: str, path: str):
-    """허니키 사용: honeykey_event + HONEYKEY 이벤트 + 사고(60초 중복 방지) + IP 임시 차단."""
+    """허니키 사용: honeykey_event + HONEYKEY 이벤트 + 사고(60초 중복 방지) + 전체 게이트웨이 토큰 폐기 + 서비스 일시 정지."""
     now = time.time()
-    blocked_ips[ip] = now + HONEY_BLOCK_S
     msg = f"허니키 사용 탐지: {hk['masked']}({hk['planted_at']}) 출발 IP {ip}"
     with get_conn() as c:
         dup = c.execute("SELECT 1 FROM honeykey_event WHERE honeykey_id=? AND source_ip=? AND at>?",
                         (hk["id"], ip, now - HONEY_DEDUP_S)).fetchone()
         c.execute("INSERT INTO honeykey_event(honeykey_id,source_ip,path,at) VALUES(?,?,?,?)", (hk["id"], ip, path, now))
+        n_tok = c.execute("UPDATE gateway_token SET status='REVOKED' WHERE status='ACTIVE'").rowcount
+        n_svc = c.execute("UPDATE service SET status='SUSPENDED' WHERE status='ACTIVE'").rowcount
         iid = None
         if not dup:
             tl = [{"at": iso(now), "step": "DETECTED", "ok": True, "detail": msg},
-                  {"at": iso(now), "step": "NOTIFY_ADMIN", "ok": True,
-                   "detail": f"관리자 통보, {ip} {HONEY_BLOCK_S}초 차단"}]
+                  {"at": iso(now), "step": "REVOKE_ALL_TOKENS", "ok": True, "detail": f"전체 API 토큰 {n_tok}개 폐기"},
+                  {"at": iso(now), "step": "SUSPEND_SERVICES", "ok": True, "detail": f"서비스 {n_svc}개 일시 정지"},
+                  {"at": iso(now), "step": "NOTIFY_ADMIN", "ok": True, "detail": "관리자 통보. 토큰 재발급·서비스 재개는 관리자가 수동으로"}]
             iid = c.execute("INSERT INTO incident(credential_id,trigger_type,status,detected_at,blocked_at,timeline)"
                             " VALUES(NULL,'HONEYKEY','OPEN',?,?,?)", (now, now, json.dumps(tl, ensure_ascii=False))).lastrowid
         c.execute("INSERT INTO event(at,kind,message,data) VALUES(?,?,?,?)",
@@ -130,8 +132,6 @@ async def chat_completions(request: Request, authorization: str = Header("")):
     if hk:  # 허니키는 IP 검사보다 먼저. 호출자에겐 일반 401로 숨긴다
         _honeykey_hit(hk, ip, request.url.path)
         return JSONResponse({"error": "invalid_token"}, status_code=401)
-    if blocked_ips.get(ip, 0) > time.time():
-        return _deny(403, "ip_blocked", ip, token)
     if not _ip_allowed(ip, cidrs):
         return _deny(403, "ip_not_allowed", ip, token)
     if not tok and token.count(".") == 2 and not token.startswith("nvm-"):  # 사용자 측 WIF(OIDC JWT) → 서비스

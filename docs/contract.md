@@ -20,7 +20,6 @@
 - `POST /v1/chat/completions` (OpenAI 호환, 스트리밍 포함). 헤더 `Authorization: Bearer <게이트웨이 토큰 nvm-... 또는 OIDC JWT>`.
 - 검사 순서(`app/gateway/router.py chat_completions`):
   ① 허니키 일치 → 401 `{"error":"invalid_token"}`(E절, `access_denied_log`에는 안 남고 `honeykey_event`로 기록)
-  ② 출발 IP가 허니키로 임시 차단 중 → 403 `{"error":"ip_blocked"}`
   ③ allowed_cidr가 1개 이상(`*` 없음)이고 출발 IP ∉ allowed_cidr → 403 `{"error":"ip_not_allowed"}` (허용 대역이 0개거나 `*`가 있으면 모두 허용)
   ④ 토큰이 게이트웨이 토큰이 아니고 점 3조각·`nvm-` 아님 → JWT 경로(J절), 실패 시 401 `{"error":"wif_*"}`
   ⑤ 토큰 해시 불일치 또는 REVOKED → 401 `{"error":"invalid_token"}`
@@ -109,7 +108,7 @@ incident 생성(credential당 1개, 이미 있으면 아무것도 안 함, timel
 STANDBY가 없으면 timeline에 실패로 기록하고 status BLOCKED 유지.
 
 ## E. 추가 엔드포인트 (구현 반영)
-- 허니키: 게이트웨이에 심어 둔 가짜 토큰(`nvm-honey-...`). 중계에서 일치하면(IP 검사보다 먼저) 호출자에게는 **일반 401 `invalid_token`**, 내부적으로 `honeykey_event` + 이벤트 `HONEYKEY` + 사고(`trigger_type=HONEYKEY`, `credential_id=null`, 같은 허니키·IP는 60초 안 중복 생성 안 함) 생성, 출발 IP를 600초 임시 차단(이후 403 `ip_blocked`). 차단 목록은 메모리라 재시작·리셋 시 사라진다.
+- 허니키: 게이트웨이에 심어 둔 가짜 토큰(`nvm-honey-...`). 중계에서 일치하면(IP 검사보다 먼저) 호출자에게는 **일반 401 `invalid_token`**, 내부적으로 `honeykey_event` + 이벤트 `HONEYKEY` + 사고(`trigger_type=HONEYKEY`, `credential_id=null`, 같은 허니키·IP는 60초 안 중복 생성 안 함) 생성, **전체 게이트웨이 토큰을 즉시 REVOKED로 폐기하고 모든 서비스를 SUSPENDED(일시 정지)로 바꾼다**(IP 차단 없음, `ip_blocked`는 더 이상 발생하지 않음). 복구는 관리자가 토큰 재발급·서비스 재개(`/demo/reset`도 가능).
 - `GET /admin/honeykeys` → `[{id,masked,planted_at,created_at,hits}]`
 - `POST /demo/honeypot/hit` → `{source_ip:"203.0.113.77",planted_at,status_code:401,response:{error:"invalid_token"}}` (HTTP 200, 리셋 전이면 409)
 - `POST /admin/services/{id}/suspend` → `{id,status:"SUSPENDED"}`, `POST /admin/services/{id}/resume` → `{id,status:"ACTIVE"}` (없는 id는 404). 정지 서비스 토큰은 403 `service_suspended`.

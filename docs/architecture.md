@@ -18,7 +18,7 @@
 ### 2-2. 게이트웨이 앱 (FastAPI, 한 프로세스, 포트 8000/8800)
 | ID | 모듈 | 책임 |
 |---|---|---|
-| G1 | `gateway/router.py` — **중계·접근통제** | `/v1/chat/completions` OpenAI 호환 중계. 검사 순서: 허니키 일치 → 허니키 IP 임시 차단 → 출발 IP(허용 CIDR, 0개면 모두 허용) → WIF JWT 또는 API 토큰 → 서비스 상태 → PRIMARY 크레덴셜 존재. 거부 로그 기록(허니키는 별도 `honeykey_event`) |
+| G1 | `gateway/router.py` — **중계·접근통제** | `/v1/chat/completions` OpenAI 호환 중계. 검사 순서: 허니키 일치(전체 토큰 폐기·서비스 정지) → 출발 IP(허용 CIDR, 0개면 모두 허용) → WIF JWT 또는 API 토큰 → 서비스 상태 → PRIMARY 크레덴셜 존재. 거부 로그 기록(허니키는 별도 `honeykey_event`) |
 | G2 | `gateway/router.py` — **관리자 API** | 크레덴셜·CIDR·서비스(정지/재개)·토큰·설정·허니키 목록·거부 로그, 실제 공급자 키 프로비저닝(`/admin/{provider}/provision`) (`/admin/*`, X-Admin-Key) |
 | G3 | `wif_inbound.py` — **WIF 검증(워크로드·개인 사용자)** | RS256 JWT 검증(서명·만료·audience·issuer, alg 화이트리스트), 신뢰 규칙(issuer + `sub` 패턴 → 서비스)으로 매핑, 로컬 데모 IdP(`/idp/*`). **목표**: 개인 사용자 토큰의 `email`·`groups` 클레임으로 사용자·정책(모델·예산)에 매핑 |
 | G4 | `providers.py` — **공급자 어댑터** | mock / openrouter / openai 어댑터. `fetch_usage`(키별 누적: 호출 수·토큰·비용 중 있는 값), `revoke`, 응답 비용 추출, 지연(`lag_s`) |
@@ -205,7 +205,7 @@ sequenceDiagram
 
 
 ### 4-4. 허니키
-게이트웨이에 심어 둔 가짜 토큰으로 접근 → 호출자에게는 평범한 401, 내부에서 `honeykey_event`·사고(HONEYKEY)·출발 IP 10분 임시 차단.
+게이트웨이에 심어 둔 가짜 토큰으로 접근 → 호출자에게는 평범한 401, 내부에서 `honeykey_event`·사고(HONEYKEY)·**전체 게이트웨이 토큰 즉시 폐기 + 모든 서비스 일시 정지**(재발급·재개는 관리자 수동).
 
 ### 4-5. 청중 라이브
 청중 폰 → `/live`(M2) → `/live/chat`이 유출 키로 공급자에 호출 → 탐지 워커가 차이를 감지해 키 폐기 → 청중 화면에 401/"차단되었습니다".

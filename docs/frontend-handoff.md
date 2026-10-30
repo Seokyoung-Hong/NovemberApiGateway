@@ -86,7 +86,6 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 | 401 | `{"error":"wif_invalid_signature"}` `wif_expired` `wif_audience_mismatch` `wif_untrusted_identity` `wif_malformed` | `/v1` JWT(사용자 측 WIF) 검증 실패 | JWT 재발급(`/demo/wif/token`)·신뢰 규칙(`/demo/wif/seed`) 확인 |
 | 401 | `{"error":"revoked"}` | `/live/chat`: 유출 키가 폐기됨 | **"차단되었습니다"** |
 | 403 | `{"error":"ip_not_allowed"}` | `/v1` 출발 IP가 등록된 허용 대역 밖 | 허용 IP 추가 또는 대역 삭제(2절) |
-| 403 | `{"error":"ip_blocked"}` | 허니키를 쓴 IP, 600초 차단 | 차단 중 |
 | 403 | `{"error":"service_suspended"}` | 정지된 서비스의 토큰 | 서비스 정지됨 |
 | 404 | `{"detail":"not found"}` 등 | 없는 사고 id·리소스, `DEMO_MODE=0`이면 `/idp/*`·`/demo/wif/*` | — |
 | 409 | `{"detail":"honeykey 없음. /demo/reset 먼저"}` | 리셋 전 `/demo/honeypot/hit` | 리셋 먼저 |

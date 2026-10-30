@@ -22,6 +22,7 @@
   };
   const STEP = {
     DETECTED: '유출 탐지', REVOKE_PROVIDER_KEY: '공급자 키 폐기', PROMOTE_STANDBY: '예비 키 승격',
+    REVOKE_ALL_TOKENS: '전체 토큰 폐기', SUSPEND_SERVICES: '서비스 일시 정지',
     NOTIFY_ADMIN: '관리자 통보', VERIFIED: '전환 키 호출 확인',
   };
   const STEP_ORDER = ['DETECTED', 'REVOKE_PROVIDER_KEY', 'PROMOTE_STANDBY', 'NOTIFY_ADMIN', 'VERIFIED'];
@@ -443,7 +444,7 @@
     v.innerHTML = `
       <section class="grid g-2">
         <div class="card">
-          <div class="card-h"><div><h2>허용 IP 대역</h2><p>여기에 없는 곳에서 온 호출은 403으로 막아요. 0개면 전부 막아요.</p></div></div>
+          <div class="card-h"><div><h2>허용 IP 대역</h2><p>여기에 없는 곳에서 온 호출은 403으로 막아요. 0개면 모두 허용해요.</p></div></div>
           <div class="list" id="cidrList"></div>
           <form class="inline-form" id="cidrForm" style="margin-top:14px">
             <input class="input mono" name="cidr" placeholder="10.20.0.0/16" required aria-label="CIDR">
@@ -463,7 +464,7 @@
           <p class="muted" style="font-size:12px;margin:12px 0 0" id="wifAud"></p>
         </div>
         <div class="card">
-          <div class="card-h"><div><h2>허니키</h2><p>일부러 흘려 둔 가짜 토큰이에요. 쓰이면 그 IP를 10분간 막아요.</p></div></div>
+          <div class="card-h"><div><h2>허니키</h2><p>일부러 흘려 둔 가짜 토큰이에요. 쓰이면 전체 API 토큰을 즉시 폐기하고 서비스를 일시 정지해요.</p></div></div>
           <div class="list" id="hkList"></div>
           <div id="blockedIps"></div>
         </div>
@@ -488,7 +489,7 @@
       const [cidrs, svcs, ti, hk, den, wif] = await Promise.all([API.cidrs(), API.services(), API.trusted(), API.honeykeys(), API.accessDenied(30), API.wifSettings().catch(() => null)]);
       if (st.page !== 'access') return;
       $('#cidrList').innerHTML = cidrs.map((c) => `<div class="row"><div class="row-ic sm ${c.label === 'VPN' ? 'ok' : ''}">${icon(c.label === 'VPN' ? 'lock' : 'globe')}</div><div class="row-b"><div class="row-t"><span class="mono">${esc(c.cidr)}</span></div><div class="row-s">${c.label === 'VPN' ? 'VPN' : '사내망'}</div></div><div class="row-e"><button class="icon-btn" data-dc="${c.id}" aria-label="삭제">${icon('trash')}</button></div></div>`).join('')
-        || `<div class="callout">${icon('alert')}<span>허용 대역이 없어서 모든 호출이 막혀요.</span></div>`;
+        || `<div class="callout">${icon('alert')}<span>허용 대역이 없어서 모든 IP를 허용하고 있어요.</span></div>`;
       $$('[data-dc]').forEach((b) => { b.onclick = async () => { try { await API.deleteCidr(b.dataset.dc); loadAccess(); } catch (e) { toast(e.message, 'bad'); } }; });
 
       $('#svcList').innerHTML = svcs.map((s) => `<div class="row" style="align-items:flex-start"><div class="row-ic ${s.status === 'ACTIVE' ? '' : 'gray'}">${icon('user')}</div>
@@ -668,7 +669,7 @@
           <button class="ctl" id="dReset"><span class="row-ic sm">${icon('refresh')}</span><b>데모 초기화</b><span>키 3개·직원 2명·허니키를 새로 심어요</span></button>
           <button class="ctl" id="dAttack"><span class="row-ic sm bad">${icon('bolt')}</span><b id="dAttackT">공격 시작</b><span>유출 키로 공급자를 직접 초당 5회 호출</span></button>
           <button class="ctl" id="dOutside"><span class="row-ic sm gray">${icon('globe')}</span><b>외부 IP에서 호출</b><span>203.0.113.57 → 403을 받아요</span></button>
-          <button class="ctl" id="dHoney"><span class="row-ic sm warn">${icon('honey')}</span><b>허니키로 침입</b><span>가짜 토큰 사용 → IP 10분 차단</span></button>
+          <button class="ctl" id="dHoney"><span class="row-ic sm warn">${icon('honey')}</span><b>허니키로 침입</b><span>가짜 토큰 사용 → 전체 토큰 폐기·서비스 정지</span></button>
           <button class="ctl" id="dWif"><span class="row-ic sm">${icon('id')}</span><b>WIF로 호출</b><span>로컬 IdP JWT로 게이트웨이 인증</span></button>
           <button class="ctl" id="dSuspend"><span class="row-ic sm gray">${icon('pause')}</span><b>직원B 정지</b><span>정지된 서비스는 403</span></button>
         </div>
@@ -705,7 +706,7 @@
           if (!tok) return toast('먼저 데모 초기화를 해 주세요', 'warn');
           try { await API.chat({ token: tok[1], message: '외부에서 접속', ip: '203.0.113.57' }); toast('통과했어요 (허용 대역을 확인하세요)', 'warn'); } catch (e) { toast(`${e.status} · ${e.message}`, 'bad'); }
         });
-        $('#dHoney', el).onclick = run($('#dHoney', el), async () => { const r = await API.honeypot(); toast(`${r.source_ip}에 ${r.status_code}을 돌려주고 IP를 막았어요`, 'warn'); });
+        $('#dHoney', el).onclick = run($('#dHoney', el), async () => { const r = await API.honeypot(); toast(`${r.source_ip}에 ${r.status_code}을 돌려주고 전체 토큰을 폐기했어요`, 'warn'); });
         $('#dWif', el).onclick = run($('#dWif', el), async () => {
           await API.wifSeed();
           const { token } = await API.wifToken();
