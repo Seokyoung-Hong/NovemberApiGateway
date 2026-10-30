@@ -219,3 +219,17 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
 - 크레덴셜: `POST /admin/credentials {provider:"vllm", auth_mode:"API_KEY", role, secret}`(secret 필수, `provider_ref`=secret. WIF는 400). 또는 `POST /demo/reset-vllm`: `/demo/reset`과 같이 DB 초기화 후 K1(PRIMARY) `sk-vllm-K1-<랜덤8>`·S1(STANDBY) `sk-vllm-S1-<랜덤8>` 시드, 허용 CIDR 없음(모두 허용), userA·userB 토큰, 허니키, 한도 100, 응답에 `leaked_key`. PRIMARY 키는 `data/live_key.json`에 저장되어 `/live/config`가 이 키를 공개한다. `/demo/cleanup-vllm`은 없음(404, 폐기할 외부 키 없음).
 - 공격 시뮬레이터 대상 규칙(`POST /demo/attack/start`): PRIMARY ACTIVE 크레덴셜의 공급자로 고른다. `mock` → Mock(model `mock`, max_tokens 2000), `vllm` → `VLLM_BASE_URL`(model `VLLM_MODEL`, max_tokens `ATTACK_MAX_TOKENS_VLLM`=30), 둘 다 초당 5건·401 받으면 자동 종료. `openrouter`/`openai`는 실제 과금이라 **409** `{"detail":"이 공급자는 공격 시뮬레이터 대상 아님. /live 청중 호출로 시연하세요"}`. 시작 이벤트 문구는 "유출 키로 <Mock|vLLM> 직접 호출 시작 (5건/초)".
 - 청중 라이브: `/live/chat`의 키가 `sk-vllm-`로 시작하면 `{VLLM_BASE_URL}/v1/chat/completions`로 직접 전달(model `VLLM_MODEL`, max_tokens 150, 같은 속도 제한, 현재 공개 키만 허용). 401이면 `{"error":"revoked"}`, `/live/stats`의 `key_status`는 마지막 응답이 401/403이면 `revoked`.
+
+## N. 폐기 실패 처리 (2026-10-31)
+공급자 폐기가 실패하거나 효과가 없는데 화면이 "차단·복구됨"으로 넘어가지 않게 한다. 구현 `app/detector/router.py`(`respond`·`revoke_guard`·`watch_revoked`·`maybe_resolve`), 어댑터 `probe_revoked`.
+- **두 가지 차단 경로를 구분한다.**
+  - 청중 경로(Mock `/live/chat`): BREACH 즉시, 공급자 폐기 결과와 무관하게 게이트웨이가 키 원문을 Mock 폐기 목록에 올린다(`POST {MOCK}/revoke {"owner": 키 원문}`, 최선 시도). `/live/chat`은 어떤 키(`sk-vllm-`·`sk-or-`·mock)든 공급자로 전달하기 전에 이 목록을 검사해 401 `{"error":"revoked"}`, `/live/stats`의 `key_status`도 `revoked`. `/demo/reset*`(Mock `/demo/reset`)로 비워진다.
+  - 공급자 직접 호출: 공격자가 게이트웨이·청중 경로를 거치지 않고 공급자에 직접 부르면 **공급자 폐기가 확인될 때까지 막을 수 없다**. 그래서 아래 재시도·확인·감시와 BLOCKED 유지가 필요하다.
+- **재시도**: 폐기 요청(어댑터 `revoke`)이 예외·비200이면 0.5초, 1초 후 다시(최대 3회). timeline `REVOKE_PROVIDER_KEY`(ok = 요청 성공 여부).
+- **확인**: 어댑터 `probe_revoked(http, cred) -> True|False|None` = 그 키로 `chat_url`에 `max_tokens=1` 호출. 401/403이면 True, 200이면 `revoke_lag_s` 동안 2초 간격으로 다시 보고 끝까지 200이면 False, 그 밖의 응답·오류는 None(확인 불가). True일 때만 "폐기 확인됨". timeline `REVOKE_VERIFIED`(첫 결과, 그리고 확인 성공 시 ok=true).
+- **revoke_guard**: 확인 전에는 3초에서 시작해 2배씩(상한 30초) 재요청·재확인을 반복. 실패가 이어지면 이벤트 `REVOKE_FAILED`(메시지에 마스킹 키·누적 시도 횟수, `data={credential_id, incident_id, attempts}`)를 첫 회와 이후 10회마다. 실패 뒤 확인되면 이벤트 `REVOKE_CONFIRMED`. `/demo/reset*` 시 다른 대응 작업과 함께 취소되고 `reset_gen`이 바뀌면 스스로 멈춘다.
+- **재활성 감시**: 폐기 확인 후 30분 동안 워커가 그 크레덴셜을 10초에 1번 `fetch_usage`. 기준값 = 확인 시각 + `lag_s` 이후 첫 조회값(`requests`, 없으면 비용). 이후 값이 기준보다 크면 이벤트 `REVOKE_NOT_EFFECTIVE`, timeline `REVOKE_VERIFIED` ok=false, 사고를 `ROTATED`(resolved_at 비움)로 되돌리고 `revoke_guard` 재시작. 감시 상태는 메모리(`state["revoke"]`)라 서버 재시작·리셋 시 사라진다.
+- **상태 규칙**: DB 폐기(REVOKED)·예비 키 승격·사용자 호출 복구는 폐기 확인을 기다리지 않고 즉시. 사고 `RESOLVED`와 이벤트 `RECOVERED`는 (예비 키 `VERIFIED` 성공) **그리고** (폐기 확인) 둘 다일 때만. 그 전까지 대시보드 `status`는 `BLOCKED`.
+- **대시보드**: `credentials[].revocation` = `"PENDING"`(확인 중) | `"FAILED"`(확인 실패, 재시도 중) | `"CONFIRMED"` | null(폐기 대상 아님·리셋 후·서버 재시작 후). 기존 필드는 그대로.
+- 새 이벤트 kind: `REVOKE_FAILED`, `REVOKE_CONFIRMED`, `REVOKE_NOT_EFFECTIVE`. 새 timeline step: `REVOKE_VERIFIED`(여러 번 나올 수 있음, `REVOKE_PROVIDER_KEY`도 재폐기 시 다시 나옴).
+- 청중 페이지(`live.html`): `/live/stats`를 3초마다 보고 `key_status=="revoked"`이면(또는 `/live/chat` 401) 입력·전송을 잠그고 "🚫 차단되었습니다"를 표시. 잠금 중에는 전송 경로가 모두 막히며, `key_status`가 `active`로 돌아오면(리셋) `/live/config`를 다시 읽어 잠금을 푼다. 이전 답변 문구는 지우지 않는다.

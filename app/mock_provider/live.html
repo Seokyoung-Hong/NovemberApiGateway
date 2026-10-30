@@ -23,31 +23,38 @@
     <textarea id="msg" class="live-input live-message" rows="3" maxlength="300" placeholder="아무 말이나 보내보세요 (최대 300자)"></textarea>
     <button id="send" class="live-send" type="submit">전송</button>
   </form>
-  <div id="revoked" class="live-revoked" hidden>🚫 이 키는 폐기되었습니다 (401)</div>
+  <div id="revoked" class="live-revoked" hidden>🚫 차단되었습니다</div>
   <div id="reply" class="live-reply"></div>
   <p id="status" class="live-status">불러오는 중…</p>
 <script>
 const $ = id => document.getElementById(id);
 const setStatus = (t, state) => { $("status").textContent = t; if (state) document.body.dataset.state = state; };
-fetch("/live/config").then(r => r.json()).then(c => { $("key").value = c.key; setStatus("준비됨 · 모델 " + c.model); });
+const loadConfig = () => fetch("/live/config").then(r => r.json()).then(c => { $("key").value = c.key; setStatus("준비됨 · 모델 " + c.model, "active"); });
+loadConfig();
+let locked = false;  // 차단되면 리셋(key_status가 active로 복귀)으로만 풀린다
+const setLocked = on => {
+  locked = on; $("revoked").hidden = !on; $("key").disabled = $("msg").disabled = $("send").disabled = on;
+  if (on) setStatus("게이트웨이가 유출을 탐지해 키를 폐기했습니다.", "revoked"); else loadConfig();
+};
+setInterval(() => fetch("/live/stats").then(r => r.json()).then(s => {
+  if (s.key_status === "revoked" && !locked) setLocked(true);
+  else if (s.key_status === "active" && locked) setLocked(false);
+}).catch(() => {}), 3000);
 $("form").onsubmit = async e => {
   e.preventDefault();
+  if (locked) return;
   const message = $("msg").value.trim();
   if (!message) return;
   $("send").disabled = true; setStatus("응답 기다리는 중…", "busy");
   try {
     const r = await fetch("/live/chat", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: $("key").value.trim(), message }) });
-    if (r.status === 401) {
-      $("revoked").hidden = false; $("key").disabled = $("msg").disabled = true;
-      setStatus("게이트웨이가 유출을 탐지해 키를 폐기했습니다.", "revoked");
-      return;
-    }
+    if (r.status === 401) { setLocked(true); return; }
     if (r.status === 429) { setStatus("잠시 후 다시 시도하세요.", "limited"); }
     else if (!r.ok) { setStatus("오류 (" + r.status + ")", "active"); }
     else { $("reply").textContent = (await r.json()).reply; $("msg").value = ""; setStatus("성공 (200)", "active"); }
   } catch { setStatus("네트워크 오류. 잠시 후 다시 시도하세요.", "active"); }
-  $("send").disabled = false;
+  $("send").disabled = locked;
 };
 </script>
 </body>
