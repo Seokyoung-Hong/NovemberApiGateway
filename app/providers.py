@@ -4,18 +4,21 @@
 - name, lag_s(공급자 보고 지연), revoke_lag_s(폐기 후 401까지), model(기본 모델), chat_url
 - fetch_usage(http, cred) -> 키별 누적값 중 '있는 것만': {cost_usd?, tokens?, requests?, buckets?}
   buckets = [(start_epoch, end_epoch, requests)] (분 단위 등). 탐지기는 채워진 필드로 판정 방식을 고른다.
-- revoke(http, cred) -> bool, prepare(body) -> 중계 본문, call_cost_usd(usage) -> 중계 1건 비용
+- revoke(http, cred) -> bool, probe_revoked(http, cred) -> True(폐기 확인)|False(아직 유효)|None(확인 불가), prepare(body) -> 중계 본문, call_cost_usd(usage) -> 중계 1건 비용
 - (실제 공급자) provision(http, role, name, limit_usd) -> (원문 키, provider_ref), cleanup(http) -> 삭제 수
 """
+import asyncio
 import os
 import secrets
+import time
 from datetime import datetime
 
 import httpx
 
+from app import vault
 from app.contract import (COST_PER_TOKEN_KRW, MOCK_BASE_URL, OPENAI_BASE_URL, OPENAI_MODEL, OPENAI_PROJECT_ID,
                           OPENAI_REVOKE_LAG_S, OPENROUTER_BASE_URL, OPENROUTER_MODEL, OPENROUTER_REVOKE_LAG_S,
-                          USAGE_LAG_S, USD_TO_KRW, VLLM_ADMIN_KEY, VLLM_BASE_URL, VLLM_MODEL)
+                          USAGE_LAG_S, USD_TO_KRW, VLLM_ADMIN_KEY, VLLM_BASE_URL, VLLM_MODEL, gemma_tune)
 
 OUR_PREFIX = "november-"  # 이 접두어로 시작하는 키·서비스 계정만 만들고·고치고·지운다
 
@@ -32,6 +35,31 @@ def _token_cost_usd(u: dict) -> float:
     return (u.get("prompt_tokens") or 0) * PRICE_IN + (u.get("completion_tokens") or 0) * PRICE_OUT
 
 
+async def _probe(self, http, cred):
+    """폐기 효과 확인: 그 키로 chat_url에 max_tokens=1 호출. 401/403=True, 200=False(revoke_lag_s 동안 2초 간격 재확인), 그 밖·오류=None."""
+    end = time.time() + self.revoke_lag_s
+    while True:
+        try:
+            if cred["auth_mode"] == "API_KEY":
+                key = vault.decrypt(cred["secret_enc"])
+            else:  # Mock WIF: 폐기된 audience는 STS가 401
+                t = await http.post(f"{MOCK_BASE_URL}/sts/token", json={"audience": cred["audience"], "identity": "november-detector"})
+                if t.status_code == 401:
+                    return True
+                key = t.json()["token"]
+            r = await http.post(self.chat_url, headers={"Authorization": f"Bearer {key}"},
+                                json={"model": self.model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1})
+        except Exception:
+            return None
+        if r.status_code in (401, 403):
+            return True
+        if r.status_code != 200:
+            return None
+        if time.time() >= end:
+            return False
+        await asyncio.sleep(min(2.0, max(0.2, end - time.time())))
+
+
 class Mock:
     name, model, revoke_lag_s = "mock", "mock", 0.5
     lag_s = USAGE_LAG_S["mock"]
@@ -40,6 +68,8 @@ class Mock:
     async def fetch_usage(self, http, cred):
         u = (await http.get(f"{MOCK_BASE_URL}/usage", params={"owner": cred["provider_ref"]})).json()
         return {"requests": u.get("requests", 0), "tokens": u["tokens"], "cost_usd": u["cost_krw"] / USD_TO_KRW}
+
+    probe_revoked = _probe
 
     async def revoke(self, http, cred):
         return (await http.post(f"{MOCK_BASE_URL}/revoke", json={"owner": cred["provider_ref"]})).status_code == 200
@@ -64,6 +94,8 @@ class OpenRouter:
         r = await http.get(f"{OPENROUTER_BASE_URL}/keys/{cred['provider_ref']}", headers=self._h())
         r.raise_for_status()
         return {"cost_usd": float(r.json()["data"]["usage"] or 0)}
+
+    probe_revoked = _probe
 
     async def revoke(self, http, cred):
         r = await http.patch(f"{OPENROUTER_BASE_URL}/keys/{cred['provider_ref']}", headers=self._h(),
@@ -128,6 +160,8 @@ class OpenAI:
         self._cache[key_id] = (now, out)
         return out
 
+    probe_revoked = _probe
+
     async def revoke(self, http, cred):  # 서비스 계정 삭제(실측 2.8초 후 401)
         _, sa_id, pid = cred["provider_ref"].split("|")
         r = await http.delete(f"{OPENAI_BASE_URL}/organization/projects/{pid}/service_accounts/{sa_id}", headers=self._h())
@@ -190,7 +224,7 @@ class Vllm(Mock):
 
     def prepare(self, body):
         m = str(body.get("model") or "")
-        out = {**body, "model": m if m and not m.startswith(("mock", "demo")) else self.model}
+        out = gemma_tune({**body, "model": m if m and not m.startswith(("mock", "demo")) else self.model})
         return out | ({"stream_options": {"include_usage": True}} if body.get("stream") else {})
 
     async def provision(self, http, role, name=None, limit_usd=None):

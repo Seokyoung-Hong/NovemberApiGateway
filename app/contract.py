@@ -108,3 +108,22 @@ if __name__ == "__main__":  # 최소 자체 검증
     assert [judge(d, 100, RATIOS["openrouter"]) for d in (4, 5, 20, 35)] == ["NORMAL", "SUSPECT", "WARNING", "BREACH"]
     assert effective_calls_diff(20, 10) == 7 and effective_calls_diff(5, 10) == 0
     print("contract ok")
+
+
+# Gemma 4 권장 설정(Google): temperature 1.0, top_p 0.95, top_k 64. 시스템 역할 지원, 빠른 채팅이라 생각(thinking) 끔.
+GEMMA_SYSTEM_PROMPT = (
+    "당신은 Ntrophy Gateway 체험 화면의 AI 어시스턴트입니다. "
+    "사용자가 쓴 언어로 답하고, 한국어 질문에는 자연스러운 한국어 존댓말로 답하세요. "
+    "핵심부터 간결하게 3~5문장 안으로 말하고, 불필요한 서론과 반복은 피하세요. "
+    "모르는 내용은 지어내지 말고 모른다고 말하세요. "
+    "목록이나 짧은 코드 블록이 도움이 될 때만 사용하세요."
+)
+
+
+def gemma_tune(body: dict) -> dict:
+    """vLLM(Gemma 4) 요청에 시스템 프롬프트와 권장 샘플링을 기본값으로 채운다. 호출자가 준 값은 덮어쓰지 않는다."""
+    msgs = list(body.get("messages") or [])
+    if not any(m.get("role") == "system" for m in msgs):
+        msgs.insert(0, {"role": "system", "content": GEMMA_SYSTEM_PROMPT})
+    return {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "chat_template_kwargs": {"enable_thinking": False},
+            **body, "messages": msgs}

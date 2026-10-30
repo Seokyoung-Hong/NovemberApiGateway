@@ -191,7 +191,7 @@
     },
 
     // 직원 호출: 게이트웨이 /v1/chat/completions (토큰 또는 WIF JWT)
-    chat: ({ token, message, history = [], ip, model = 'mock', max_tokens = 120 }) => post('/v1/chat/completions',
+    chat: ({ token, message, history = [], ip, model = 'mock', max_tokens = 300 }) => post('/v1/chat/completions',
       { model, max_tokens, messages: [...history, { role: 'user', content: message }] },
       { headers: { Authorization: `Bearer ${token}`, ...(ip ? { 'X-Demo-Source-IP': ip } : {}) } }),
 

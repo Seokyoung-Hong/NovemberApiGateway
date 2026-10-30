@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.clientip import client_ip, public_guard
 from app.contract import (PUBLIC_MODE, LEAKED_KEY, LIVE_KEY_PATH, MOCK_USAGE_LAG_S, OPENROUTER_BASE_URL, OPENROUTER_MODEL,
-                          VLLM_BASE_URL, VLLM_MODEL, WIF_TOKEN_TTL_S, cost_krw)  # contract import 시 .env 로드
+                          VLLM_BASE_URL, VLLM_MODEL, WIF_TOKEN_TTL_S, cost_krw, gemma_tune)  # contract import 시 .env 로드
 
 app = FastAPI(**({"docs_url": None, "redoc_url": None, "openapi_url": None} if PUBLIC_MODE else {}))
 app.middleware("http")(public_guard)  # 공개 모드면 Mock /demo/reset도 관리자 키 필요
@@ -175,12 +175,12 @@ def live_config():
 async def _live_direct(key: str, msgs: list, url: str, model: str):
     """청중 호출을 공급자(OpenRouter·vLLM)에 직접 전달(게이트웨이를 거치지 않음 = 유출 키 직접 사용)."""
     global live_calls, live_or_status
-    if key != _live_key():  # 열린 프록시가 되지 않게 지금 공개한 키만 허용
+    if key != _live_key() or key in revoked:  # 열린 프록시 방지 + 게이트웨이가 올린 폐기 목록(공급자 폐기 확인 전에도 청중 경로 즉시 차단)
         return _revoked()
     try:
         async with httpx.AsyncClient(timeout=20) as c:
             r = await c.post(url, headers={"Authorization": f"Bearer {key}"},
-                             json={"model": model, "max_tokens": 150, "messages": msgs})
+                             json=(gemma_tune if model == VLLM_MODEL else dict)({"model": model, "max_tokens": 300, "messages": msgs}))
     except httpx.HTTPError:
         return JSONResponse({"error": "upstream_error"}, status_code=502)
     live_or_status = r.status_code
@@ -221,7 +221,7 @@ async def live_chat(request: Request):
 
 def _live_revoked() -> bool:
     key = _live_key()
-    return live_or_status in (401, 403) if key.startswith(tuple(DIRECT)) else key in revoked
+    return key in revoked or (key.startswith(tuple(DIRECT)) and live_or_status in (401, 403))
 
 
 @app.get("/live/stats")
