@@ -30,9 +30,9 @@ vLLM은 키별 사용량을 알려 주지 않는다. 그래서 vLLM 앞단 게�
 - 계량값은 메모리 보관으로 충분(프로세스 재시작 시 초기화 허용).
 
 ## 4. NovemberAiGateway 쪽 설정 (우리 구현)
-- 환경변수: `VLLM_BASE_URL`(코드 기본 `http://127.0.0.1:8100`은 로컬 개발용, 배포 서버는 `https://vllm.dorm.sio2.kr`), `VLLM_ADMIN_KEY`(위 `GPU_ADMIN_KEY`와 같은 값), `VLLM_MODEL`(코드 기본 `google/gemma-4-E4B-it-qat-w4a16-ct`, **배포 서버는 vLLM이 서빙하는 `google/gemma-4-E2B-it-qat-w4a16-ct`로 설정**), `USAGE_LAG_S_VLLM`(기본 2).
+- 환경변수: `VLLM_BASE_URL`(코드 기본 `http://127.0.0.1:8100`은 로컬 개발용, 배포 서버는 `https://vllm.dorm.sio2.kr`), `VLLM_ADMIN_KEY`(위 `GPU_ADMIN_KEY`와 같은 값), `VLLM_MODEL`(코드 기본 `google/gemma-4-E2B-it-qat-w4a16-ct`, vLLM이 서빙하는 모델과 같아야 함), `USAGE_LAG_S_VLLM`(기본 0).
 - 공급자 이름 `vllm`. 크레덴셜 등록: `POST /admin/credentials {provider:"vllm", auth_mode:"API_KEY", role, secret}` 또는 `POST /demo/reset-vllm`(K1·S1 시드, 유출 키 반환).
-- 탐지기: `GET {VLLM_BASE_URL}/usage?owner=<키>`를 2초마다 조회 → 호출 수(`requests`) 기준으로 판정(Mock과 동일 비율 0.1/0.5/0.7). 폐기: `POST {VLLM_BASE_URL}/revoke`.
+- 탐지기: `GET {VLLM_BASE_URL}/usage?owner=<키>`를 1초(`POLL_INTERVAL_S`)마다 조회 → 호출 수(`requests`) 기준으로 판정(Mock과 동일 비율 0.1/0.5/0.7). 폐기: `POST {VLLM_BASE_URL}/revoke`.
 - 공격 시뮬레이터: PRIMARY 크레덴셜이 `vllm`이면 `VLLM_BASE_URL`로 `VLLM_MODEL`, 작은 `max_tokens`(기본 30)로 호출한다(GPU 부하를 줄이기 위해 초당 5건).
 
 ## 5. 구현 체크리스트 (vLLM 게이트웨이 담당)

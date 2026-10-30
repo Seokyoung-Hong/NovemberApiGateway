@@ -15,7 +15,7 @@
 | F4 | 사용자 게이트웨이 토큰 발급·폐기 | P0 | 1 |
 | F5 | 요청 중계 + 접근 통제(IP+토큰) | P0 | 2 |
 | F6 | 게이트웨이 사용량 기록(원화 비용) | P0 | 2 |
-| F7 | 공급자 사용량 수집(2초 주기) | P0 | 2, 4 |
+| F7 | 공급자 사용량 수집(1초 주기) | P0 | 2, 4 |
 | F8 | 사용량 대조·위험도 판정 | P0 | 4, 5 |
 | F9 | 자동 대응(폐기→예비키 승격→통보) | P0 | 5, 6 |
 | F10 | 사고 기록·타임라인 | P0 | 5, 6 |
@@ -35,7 +35,7 @@
 - 수용 기준: 등록 후 목록에서 원문이 어디에도 보이지 않는다.
 
 ### F2 한도 설정
-- 판정 기준 값 `unauthorized_call_limit`(허용하는 '설명되지 않는 호출 수', 기본 100). 대표가 수정 가능. 변경은 다음 워커 틱(≤2초)부터 판정에 반영.
+- 판정 기준 값 `unauthorized_call_limit`(허용하는 '설명되지 않는 호출 수', 기본 100). 대표가 수정 가능. 변경은 다음 워커 틱(≤1초)부터 판정에 반영.
 - `loss_limit_krw`(기본 100,000)는 참고 표시용으로만 남는다(판정에 안 씀).
 - 경고/차단 비율은 상수(`WARN=0.5`, `BLOCK=0.7`, `SUSPECT=0.1`, Mock 기준). 실제 공급자(OpenRouter·OpenAI)는 0.2/0.35/0.05(`contract.RATIOS`).
 - 허용 오차 `TOLERANCE_CALLS=3`건(진행 중 요청·집계 지연 흡수).
@@ -60,7 +60,7 @@
 - 비용 = `total_tokens × 0.4원`(Mock 단가, 데모 상수). Mock Provider와 **동일 공식**이어야 대조가 맞는다. (실제 공급자는 응답 `usage.cost` 또는 토큰×단가, 판정은 호출 수라 비용 공식 차이가 판정에 영향 없음)
 
 ### F7 공급자 사용량 수집
-- 2초(`POLL_INTERVAL_S`)마다 Mock Provider `GET /usage?owner=<provider_ref>`를 호출, 크레덴셜별 누적 `cost_krw`·`tokens`·`requests`를 `provider_usage`에 적재.
+- 1초(`POLL_INTERVAL_S`)마다 Mock Provider `GET /usage?owner=<provider_ref>`를 호출, 크레덴셜별 누적 `cost_krw`·`tokens`·`requests`를 `provider_usage`에 적재.
 - Mock은 **집계 지연 2초**(`MOCK_USAGE_LAG_S`)를 흉내 낸다.
 
 ### F8 대조·판정
@@ -174,7 +174,7 @@ NORMAL → SUSPECT → WARNING → BLOCKED → RECOVERED → NORMAL
 - 비용 공식이 Gateway와 Mock에서 1원이라도 다르면 항상 SUSPECT가 뜬다. 공식은 한 곳에서 import.
 
 ## 구현 반영 사항 (PoC 구현 기준, 위 본문과 다른 점)
-- 탐지 워커 폴링 주기 `POLL_INTERVAL_S`=2초, Mock 집계 지연 `MOCK_USAGE_LAG_S`=2초.
+- 탐지 워커 폴링 주기 `POLL_INTERVAL_S`=1초(공급자별 `min_poll_s`), Mock 집계 지연 `MOCK_USAGE_LAG_S`=2초.
 - 대시보드 `status`는 ACTIVE 크레덴셜 중 최악 판정. 열린 incident가 있으면 BLOCKED, RESOLVED 후 10초간 RECOVERED, 이후 NORMAL.
 - 타임라인: DETECTED·REVOKE는 즉시, PROMOTE_STANDBY·NOTIFY_ADMIN·VERIFIED는 연출용 1초 간격(표시 시각일 뿐 실제 승격은 폐기 직후 DB에 즉시 반영).
 - 폐기 즉시 STANDBY 승격(사용자 호출 503 방지). 검증은 승격 키로 Mock에 `max_tokens=1` 호출.

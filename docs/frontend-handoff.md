@@ -26,7 +26,7 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
   - `/docs`(Swagger)는 꺼져 있다. 스키마는 `contract.md`를 본다.
 - **로컬 실행**: README "실행" 절(`scripts/dev.ps1` → 게이트웨이 `http://127.0.0.1:8000`, Mock `http://127.0.0.1:9000`). 로컬 관리자 키 기본값 `admin`, `/demo/*`는 키 불필요. 로컬에서는 `/live`가 9000 포트(다른 origin)다.
 - **CORS**: 게이트웨이·Mock 모두 전체 허용(`allow_origins/methods/headers=*`). 401에도 CORS 헤더가 붙는다. 쿠키·인증정보는 쓰지 않는다.
-- **폴링 권장 주기**: 대시보드 `GET /admin/dashboard` 1초, `GET /live/stats` 2초, `GET /admin/events?since_id=` 1~2초, `GET /admin/timeseries` 2초(버킷이 2초). 서버 워커는 2초마다 판정하므로 더 빨리 불러도 값은 2초 단위로 바뀐다.
+- **폴링 권장 주기**: 대시보드 `GET /admin/dashboard` 1초, `GET /live/stats` 2초, `GET /admin/events?since_id=` 1~2초, `GET /admin/timeseries` 2초(버킷이 2초). 서버 워커는 1초마다 판정한다(OpenRouter 3초·OpenAI 15초마다 조회).
 - **허용 IP(테스트 서버 포함)**: 기본은 **모두 허용**(리셋 직후 `GET /admin/cidrs` = `[]`, 대시보드 `ip_policy:"open"`). 관리자가 `POST /admin/cidrs {"cidr":"10.0.0.0/16","label":"INTERNAL"}`처럼 대역을 하나라도 등록하면 그 대역만 허용되고 나머지는 **403 `ip_not_allowed`**. `*`를 등록하면 전체 허용.
 
 ## 3. 화면별 API 매핑
@@ -190,7 +190,7 @@ API 원본은 `docs/contract.md`(절 A~K). 이 문서는 화면을 만들 때 �
 - 공격 시뮬레이터는 Mock 모드 전용(실제 공급자 모드에서 눌러도 탐지되지 않음).
 - OpenRouter 호출 수는 비용 기반 추정, 폐기 반영 최대 20초 → 손실이 차단선을 넘을 수 있다. OpenAI는 탐지 약 7분 지연.
 - 청중이 빠르면 최종 손실이 한도를 넘을 수 있다(차단선 70%는 이를 흡수하려는 여유).
-- 대시보드 대부분 값은 워커 2초 틱 기준이라 실시간보다 최대 2초(+공급자 지연) 늦다.
+- 대시보드 대부분 값은 워커 1초 틱 기준이라 실시간보다 최대 1초(+공급자 지연) 늦다.
 - 관리자 키 오류 문구가 엔드포인트에 따라 두 가지(`invalid_admin_key`/`bad admin key`). 상태 코드 401로 처리할 것.
 - 관리자 인증은 고정 키 1개(SSO·역할 없음).
 - 판정 방식(사용량 %/건수): `/admin/settings`의 `detection_mode`가 없으면 레거시 서버로 그리면 된다. 저장 후에는 대시보드 `detection`, 사고 `block_label`을 쓴다(contract.md O절).

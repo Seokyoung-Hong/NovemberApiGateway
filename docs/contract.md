@@ -37,7 +37,7 @@
 - `POST /admin/credentials` `{provider:"mock", auth_mode:"API_KEY"|"WIF", role:"PRIMARY"|"STANDBY", secret?, audience?}` → 위 항목 1개. 같은 provider에 ACTIVE PRIMARY가 이미 있으면 400. `provider`가 mock이 아니면 400(`POST /admin/{provider}/provision` 사용, G·I절). `provider_ref`: API_KEY=secret, WIF=`wif:<audience>`(masked도 `wif:<audience>`).
 - `DELETE /admin/credentials/{id}` → `{"ok":true}` (status=REVOKED로만 표시, 공급자 폐기는 안 함)
 - `GET /admin/settings` → `{"unauthorized_call_limit": 100, "loss_limit_krw": 100000}`.
-  `PUT /admin/settings` 본문에 **보낸 키만** 갱신(둘 다 양의 정수, 아니면 400), 응답은 갱신 후 GET과 같은 형태. 변경은 다음 워커 틱(≤`POLL_INTERVAL_S`=2초)부터 판정에 반영.
+  `PUT /admin/settings` 본문에 **보낸 키만** 갱신(둘 다 양의 정수, 아니면 400), 응답은 갱신 후 GET과 같은 형태. 변경은 다음 워커 틱(≤`POLL_INTERVAL_S`=1초, 공급자별 `min_poll_s`)부터 판정에 반영.
   `unauthorized_call_limit` = 허용하는 '설명되지 않는 호출 수'(**판정 기준**). `loss_limit_krw` = 참고 표시용 금액 한도(판정에 안 씀).
 - `GET /admin/cidrs` → `[{id,cidr,label}]`, `POST /admin/cidrs` `{cidr,label?(기본 INTERNAL)}` → `{id,cidr,label}`(cidr는 정규화, `*`는 그대로 저장, `*`·`0.0.0.0/0`·`::/0`는 전체 허용, 잘못되면 400). 빈 배열 = 모두 허용(기본값), `DELETE /admin/cidrs/{id}` → `{"ok":true}`
 - `GET /admin/services` → `[{id,name,status,tokens:[{id,token_masked,status,created_at}]}]` (토큰 목록 전용 GET은 없음)
@@ -102,7 +102,7 @@
 - 실제 공급자 리셋·정리(`/demo/reset-{provider}`, `/demo/cleanup-{provider}`)는 G·I절, 허니키 호출(`/demo/honeypot/hit`)은 E절.
 
 ### 워커 `worker_loop()`
-`POLL_INTERVAL_S`(2초)마다 ACTIVE credential 각각 어댑터 `fetch_usage` → `provider_usage`(cost_krw, tokens, requests) 적재 → `assess`(I절)로 호출 수 비교.
+`POLL_INTERVAL_S`(1초)마다(어댑터별 `min_poll_s` 이상 간격, P절) ACTIVE credential 각각 어댑터 `fetch_usage` → `provider_usage`(cost_krw, tokens, requests) 적재 → `assess`(I절)로 호출 수 비교.
 `judge(max(diff_calls, certain_diff_calls), unauthorized_call_limit, 공급자 비율)` 결과(Mock 판정표: < 0.1L NORMAL, ≥0.1L SUSPECT, ≥0.5L WARNING, ≥0.7L BREACH): SUSPECT/WARNING은 상태·이벤트 기록, BREACH는 **자동 대응**:
 incident 생성(credential당 1개, 이미 있으면 아무것도 안 함, timeline `DETECTED`) → 공급자 폐기(어댑터 `revoke`, Mock `POST /revoke`) → credential REVOKED + 같은 provider의 가장 id 작은 STANDBY(ACTIVE)를 PRIMARY로 승격(`replaced_by_id`, incident `blocked_at`·`new_credential_id`) → (연출 1초 간격) timeline `PROMOTE_STANDBY`·incident ROTATED → `NOTIFY_ADMIN`·이벤트 `BLOCKED` → 승격 키로 공급자에 `max_tokens=1` 호출(게이트웨이를 거치지 않음) 성공 시 `VERIFIED`·incident `RESOLVED` + 이벤트 `RECOVERED`.
 STANDBY가 없으면 timeline에 실패로 기록하고 status BLOCKED 유지.
@@ -213,7 +213,7 @@ Mock 대신 실제 OpenRouter 키로 같은 탐지·차단 흐름을 보여 준�
 > 해커톤 데모 전용 구성이다. 실제 시스템 아키텍처 그림에는 포함하지 않는다.
 공급자가 구현할 인터페이스는 `docs/vllm-gateway-spec.md`(정답). vLLM 앞단 게이트웨이가 키 인증(처음 보는 키도 유효, 폐기 키만 401)·키별 계량·폐기를 맡는다. 어댑터 `Vllm`(`app/providers.py`)은 Mock과 같은 모양.
 
-- 환경변수: `VLLM_BASE_URL`(코드 기본 `http://127.0.0.1:8100`은 로컬 개발용, 배포 서버는 `https://vllm.dorm.sio2.kr`), `VLLM_ADMIN_KEY`(설정 시 관리 경로에 `X-Admin-Key`로 보냄, 공급자의 `GPU_ADMIN_KEY`와 같은 값), `VLLM_MODEL`(기본 `google/gemma-4-E4B-it-qat-w4a16-ct`), `USAGE_LAG_S_VLLM`(기본 2).
+- 환경변수: `VLLM_BASE_URL`(코드 기본 `http://127.0.0.1:8100`은 로컬 개발용, 배포 서버는 `https://vllm.dorm.sio2.kr`), `VLLM_ADMIN_KEY`(설정 시 관리 경로에 `X-Admin-Key`로 보냄, 공급자의 `GPU_ADMIN_KEY`와 같은 값), `VLLM_MODEL`(기본 `google/gemma-4-E2B-it-qat-w4a16-ct`), `USAGE_LAG_S_VLLM`(기본 0).
 - 공급자 쪽 호출: 중계·공격 `POST {VLLM_BASE_URL}/v1/chat/completions`, 사용량 `GET /usage?owner=<키>` → `{requests, tokens, cost_krw}`(탐지기는 `requests`로 판정, 비율 Mock과 동일 0.1/0.5/0.7), 폐기 `POST /revoke {"owner"}`, 초기화 `POST /demo/reset`(실패·404 무시).
 - 중계 `prepare`: model이 비었거나 `mock`/`demo`로 시작하면 `VLLM_MODEL`로 치환, `stream:true`면 `stream_options.include_usage=true`. 중계 1건 비용은 Mock과 같은 토큰×0.4원.
 - 크레덴셜: `POST /admin/credentials {provider:"vllm", auth_mode:"API_KEY", role, secret}`(secret 필수, `provider_ref`=secret. WIF는 400). 또는 `POST /demo/reset-vllm`: `/demo/reset`과 같이 DB 초기화 후 K1(PRIMARY) `sk-vllm-K1-<랜덤8>`·S1(STANDBY) `sk-vllm-S1-<랜덤8>` 시드, 허용 CIDR 없음(모두 허용), userA·userB 토큰, 허니키, 한도 100, 응답에 `leaked_key`. PRIMARY 키는 `data/live_key.json`에 저장되어 `/live/config`가 이 키를 공개한다. `/demo/cleanup-vllm`은 없음(404, 폐기할 외부 키 없음).

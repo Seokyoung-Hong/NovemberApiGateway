@@ -22,7 +22,7 @@
 | G2 | `gateway/router.py` — **관리자 API** | 크레덴셜·CIDR·서비스(정지/재개)·토큰·설정·허니키 목록·거부 로그, 실제 공급자 키 프로비저닝(`/admin/{provider}/provision`) (`/admin/*`, X-Admin-Key) |
 | G3 | `wif_inbound.py` — **WIF 검증(워크로드·개인 사용자)** | RS256 JWT 검증(서명·만료·audience·issuer, alg 화이트리스트), 신뢰 규칙(issuer + `sub` 패턴 → 서비스)으로 매핑, 로컬 데모 IdP(`/idp/*`). **목표**: 개인 사용자 토큰의 `email`·`groups` 클레임으로 사용자·정책(모델·예산)에 매핑 |
 | G4 | `providers.py` — **공급자 어댑터** | mock / openrouter / openai 어댑터. `fetch_usage`(키별 누적: 호출 수·토큰·비용 중 있는 값), `revoke`, 응답 비용 추출, 지연(`lag_s`) |
-| D1 | `detector/router.py` — **탐지·대응 워커** | 2초마다 공급자 사용량 조회 → 게이트웨이 기록과 시점 정렬 비교 → 판정(NORMAL/SUSPECT/WARNING/BREACH) → 자동 대응 |
+| D1 | `detector/router.py` — **탐지·대응 워커** | 1초(`POLL_INTERVAL_S`, 공급자별 `min_poll_s`)마다 공급자 사용량 조회 → 게이트웨이 기록과 시점 정렬 비교 → 판정(NORMAL/SUSPECT/WARNING/BREACH) → 자동 대응 |
 | D2 | `detector/router.py` — **대시보드 API·데모 제어** | 상태·차액·시계열·사고·이벤트 조회, 공격 시뮬레이터(Mock 전용), 리셋(`/demo/reset`, `/demo/reset-openrouter`·`-openai`), 정리(`/demo/cleanup-*`), 허니키 호출 |
 | U5 | `usage.py` + `pricing.py` — **사용량 집계·예측** | 서비스별 토큰·비용 집계, 모델별 단가표 기반 예상 비용, 선형 월말 예측, 월 예산 |
 | T1 | `testpage.py` + `static/test.html` | 디자인 없는 기능 테스트 페이지 `/test` |
@@ -49,7 +49,7 @@
 | ID | 이름 | 사용량 조회 | 키 폐기 | 반영 지연(실측) |
 |---|---|---|---|---|
 | P1 | Mock | `/usage` | `/revoke` | 2초 / 즉시(어댑터 값 0.5초) |
-| P2 | OpenRouter | `GET /keys/{hash}` 사용액(USD) | `PATCH disabled` | 약 6초 / 약 20초 (호출 수 API는 당일 미지원) |
+| P2 | OpenRouter | `GET /keys/{hash}` 사용액(USD) | `PATCH disabled` | 약 6초 / 최대 약 20초 (호출 수 API는 당일 미지원) |
 | P3 | OpenAI | Usage API `num_model_requests` 1분 버킷 | 서비스 계정 삭제 | 95~381초(실측 2회, 편차 큼) / 약 3초 |
 
 ### 2-6. 해커톤 데모 전용 구성 (아키텍처 그림에서 제외)
@@ -93,7 +93,7 @@ flowchart LR
             G1["중계 · 접근통제 (FastAPI + httpx)<br/>허니키 → IP → 토큰/WIF → 서비스"]
             G3["WIF 검증 (python cryptography)<br/>JWT RS256 · 신뢰 규칙"]
             G2["관리자 API"]
-            D1["탐지 · 대응 워커<br/>asyncio 태스크 · 2초 주기"]
+            D1["탐지 · 대응 워커<br/>asyncio 태스크 · 1초 주기"]
             D2["대시보드 · 데모 제어"]
             U5["사용량 집계 · 예측"]
             G4["공급자 어댑터 (httpx)"]

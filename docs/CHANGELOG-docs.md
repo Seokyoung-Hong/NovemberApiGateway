@@ -80,3 +80,4 @@
 | contract.md P(신규), architecture.md 4-2, frontend-handoff.md | 허용 오차가 코드 상수 3, 폴링 2초 | 관리자 설정 `tolerance_calls`(기본 0), 내부 호출·진행 중 요청을 설명된 호출로 계산, 폴링 1초·공급자별 `min_poll_s`, vLLM 지연 기본 0, 환경변수 기록 |
 | architecture.md, key-security-design.md, README.md | KMS 봉투 암호화·P1 보강을 "목표"로 표기, Vault를 권장 구성으로 표기 | 적용됨으로 정정: `KEY_BACKEND=kms`(CMK `alias/november-gateway-kek`, 크레덴셜별 DEK, AES-256-GCM, 암호화 컨텍스트, DEK 캐시 10분, `v2:kms:` 암호문), `VAULT_KEY` 기본값 제거, `provider_ref` 해시, 권한 600/700, 최소 권한 IAM 사용자(한계 명시). Vault·감사 로그·관리 키 분리·테넌트별 KEK·정기 교체는 향후. 8절 격차를 해소/잔여로 재작성 |
 - 2026-10-31: kms-setup.md에 운영 반영 기록(CT 1003, KEY_BACKEND=kms) 추가
+- 2026-10-31: README 재작성(서비스 캡처 docs/screenshots, kms-setup.md 링크), contract·architecture·feature-spec·frontend-handoff·vllm-gateway-spec의 워커 주기 2초→1초(`POLL_INTERVAL_S`, `min_poll_s`), `USAGE_LAG_S_VLLM` 기본 0, `VLLM_MODEL` 기본 E2B, OpenRouter 폐기 반영 "최대 약 20초"로 통일
