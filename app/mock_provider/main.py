@@ -172,7 +172,7 @@ def live_config():
     return {"key": key, "model": next((m for p, (_, m) in DIRECT.items() if key.startswith(p) and m), LIVE_MODEL)}  # 직접 호출 모델과 표시를 일치
 
 
-async def _live_direct(key: str, msg: str, url: str, model: str):
+async def _live_direct(key: str, msgs: list, url: str, model: str):
     """청중 호출을 공급자(OpenRouter·vLLM)에 직접 전달(게이트웨이를 거치지 않음 = 유출 키 직접 사용)."""
     global live_calls, live_or_status
     if key != _live_key():  # 열린 프록시가 되지 않게 지금 공개한 키만 허용
@@ -180,7 +180,7 @@ async def _live_direct(key: str, msg: str, url: str, model: str):
     try:
         async with httpx.AsyncClient(timeout=20) as c:
             r = await c.post(url, headers={"Authorization": f"Bearer {key}"},
-                             json={"model": model, "max_tokens": 150, "messages": [{"role": "user", "content": msg}]})
+                             json={"model": model, "max_tokens": 150, "messages": msgs})
     except httpx.HTTPError:
         return JSONResponse({"error": "upstream_error"}, status_code=502)
     live_or_status = r.status_code
@@ -204,14 +204,17 @@ async def live_chat(request: Request):
     hits.append(now)
     body = await request.json()
     key, msg = str(body.get("key", "")).strip(), str(body.get("message", ""))[:300]
+    hist = [{"role": m["role"], "content": str(m.get("content", ""))[:600]} for m in (body.get("history") or [])[-10:]  # 이전 대화(최근 10개)
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant")]
+    msgs = hist + [{"role": "user", "content": msg}]
     for prefix, (url, model) in DIRECT.items():
         if key.startswith(prefix):
-            return await _live_direct(key, msg, url, model or LIVE_MODEL)
+            return await _live_direct(key, msgs, url, model or LIVE_MODEL)
     owner = _owner(key)
     if owner is None:
         return _revoked()
     d = await _complete(owner, {"model": LIVE_MODEL, "max_tokens": 150,
-                                "messages": [{"role": "user", "content": msg}]})
+                                "messages": msgs})
     live_calls += 1
     return {"reply": d["choices"][0]["message"]["content"], "status": 200}
 

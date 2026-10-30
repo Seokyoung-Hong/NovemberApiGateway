@@ -6,6 +6,7 @@
   'use strict';
   const { $, esc, icon, n, toast } = UI;
 
+  const hist = []; // 이전 대화(모델에 문맥으로 전달)
   const st = { key: '', revoked: false, shown: false, busy: false, sim: false, fakePeople: 1, audience: null };
   const msgs = $('#msgs'), input = $('#input');
   $('#send').innerHTML = icon('send');
@@ -42,7 +43,7 @@
   }
 
   function restore() { // /demo/reset 후 키가 다시 active 가 되면 새로고침 없이 복귀
-    st.revoked = false; st.shown = false;
+    st.revoked = false; st.shown = false; hist.length = 0;
     setState('active');
     $('#keyStatus').className = 'badge ok live-status';
     $('#keyStatus').textContent = '사용 가능';
@@ -77,7 +78,8 @@
     const typing = add('ai', '<span class="typing"><i></i><i></i><i></i></span>');
     startAudience();
     try {
-      const r = await API.liveChat(st.key, text);
+      const r = await API.liveChat(st.key, text, hist.slice(-10));
+      hist.push({ role: 'user', content: text }, { role: 'assistant', content: r.reply });
       typing.innerHTML = esc(r.reply);
       setState('active');
     } catch (e) {
