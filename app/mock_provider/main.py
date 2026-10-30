@@ -168,7 +168,8 @@ def _live_key() -> str:
 
 @app.get("/live/config")
 def live_config():
-    return {"key": _live_key(), "model": LIVE_MODEL}
+    key = _live_key()
+    return {"key": key, "model": next((m for p, (_, m) in DIRECT.items() if key.startswith(p) and m), LIVE_MODEL)}  # 직접 호출 모델과 표시를 일치
 
 
 async def _live_direct(key: str, msg: str, url: str, model: str):
