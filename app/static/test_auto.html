@@ -136,7 +136,8 @@ var items = [
   await sleep(500);
   var inc = await api("/admin/incidents"); expect(inc, 200, null, "incidents");
   ok(Array.isArray(inc.json) && inc.json.some(function (x) { return x.trigger_type === "HONEYKEY"; }), "HONEYKEY 사고 없음");
-  return "401, HONEYKEY 사고 있음"; } },
+  await items[3].fn(); // 허니키는 전체 토큰 폐기·서비스 정지 → 다음 항목을 위해 리셋(새 토큰)
+  return "401, HONEYKEY 사고 있음 (이후 리셋)"; } },
 { n: 9, name: "설정", expect: "조회 + unauthorized_call_limit 변경/복원", fn: async function () {
   var g = await api("/admin/settings"); expect(g, 200, null, "get");
   var old = g.json.unauthorized_call_limit; ok(typeof old === "number", "unauthorized_call_limit 없음");
